@@ -7,6 +7,7 @@ import itertools
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import tempfile
@@ -14,9 +15,23 @@ import threading
 import time
 
 
+_ASS_COLOUR = re.compile(r"&H([0-9A-Fa-f]{6})&")        # &HBBGGRR& (alpha codes have only two digits, so they are left alone)
+
+
+def _to_gray(match):
+    h = match.group(1)
+    b, g, r = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    v = int(255 * lum ** 0.75)                              # a little gamma so dark UI colours stay apart on a gray screen
+    return f"&H{v:02X}{v:02X}{v:02X}&"
+
+
 class Mpv:
-    def __init__(self, argv_template, key_bindings=None):
+    mono = False           # True: turn every overlay colour into its gray equivalent (black-and-white screens)
+
+    def __init__(self, argv_template, key_bindings=None, mono=False):
         """argv_template: list with {sock} and {inputconf} placeholders. key_bindings: {mpv-key: tv-command}."""
+        self.mono = mono
         self.dir = tempfile.mkdtemp(prefix="spelunkr-")
         self.sock_path = os.path.join(self.dir, "mpv.sock")
         conf = os.path.join(self.dir, "input.conf")
@@ -99,8 +114,8 @@ class Mpv:
         r = box[0]
         return r.get("data") if r.get("error") == "success" else None
 
-    def get(self, prop):
-        return self.request("get_property", prop)
+    def get(self, prop, timeout=3):
+        return self.request("get_property", prop, timeout=timeout)
 
     # -- helpers used by the TV client --
     def play(self, url, start=0.0, length=None):
@@ -136,6 +151,8 @@ class Mpv:
     def overlay(self, oid, ass):
         """Draw (or clear, if ass is empty) an ASS overlay layer."""
         if ass:
+            if self.mono:
+                ass = _ASS_COLOUR.sub(_to_gray, ass)
             self.command("osd-overlay", oid, "ass-events", ass, self.res[0], self.res[1])
         else:
             self.command("osd-overlay", oid, "none", "")

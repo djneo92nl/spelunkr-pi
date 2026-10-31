@@ -10,7 +10,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/app/mac"
 
 # the client
-cp "$HERE"/tv.py "$HERE"/schedule.py "$HERE"/osd.py "$HERE"/mpvctl.py "$HERE"/inputs.py "$HERE"/webremote.py \
+cp "$HERE"/tv.py "$HERE"/schedule.py "$HERE"/osd.py "$HERE"/mpvctl.py "$HERE"/inputs.py "$HERE"/webremote.py "$HERE"/subs.py "$HERE"/prefetch.py \
    "$HERE"/config.json "$APP/Contents/Resources/app/"
 cp "$HERE"/mac/menubar.py "$APP/Contents/Resources/app/mac/"
 

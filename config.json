@@ -36,7 +36,11 @@
         "--network-timeout=30",
         "--cache=yes",
         "--demuxer-max-bytes=64MiB",
-        "--ytdl=no"
+        "--ytdl=no",
+        "--sub-auto=no",
+        "--sub-font-size=42",
+        "--sub-border-size=2.5",
+        "--sub-pos=94"
       ],
       "noise_graph": "av://lavfi:nullsrc=s=192x144:r=15,geq=random(1)*255:128:128",
       "black_graph": "av://lavfi:color=c=black:s=320x240:r=5"
@@ -64,7 +68,11 @@
         "--cache=yes",
         "--demuxer-max-bytes=16MiB",
         "--demuxer-readahead-secs=20",
-        "--ytdl=no"
+        "--ytdl=no",
+        "--sub-auto=no",
+        "--sub-font-size=42",
+        "--sub-border-size=2.5",
+        "--sub-pos=94"
       ],
       "noise_graph": "av://lavfi:nullsrc=s=96x72:r=12,geq=random(1)*255:128:128",
       "black_graph": "av://lavfi:color=c=black:s=160x120:r=5"
@@ -92,10 +100,110 @@
         "--cache=yes",
         "--demuxer-max-bytes=16MiB",
         "--demuxer-readahead-secs=20",
-        "--ytdl=no"
+        "--ytdl=no",
+        "--sub-auto=no",
+        "--sub-font-size=42",
+        "--sub-border-size=2.5",
+        "--sub-pos=94"
       ],
       "noise_graph": "av://lavfi:nullsrc=s=160x90:r=12,geq=random(1)*255:128:128",
       "black_graph": "av://lavfi:color=c=black:s=160x90:r=5"
+    },
+    "pi-bw": {
+      "_note": "Black-and-white screen on the Pi's composite output. Also add sdtv_disable_colourburst=1 to config.txt (sharper picture on a monochrome display). If the picture is still coloured, add --vf=lavfi=[hue=s=0] (uses CPU).",
+      "mpv": [
+        "mpv",
+        "--idle=yes",
+        "--force-window=yes",
+        "--no-terminal",
+        "--no-config",
+        "--osc=no",
+        "--input-ipc-server={sock}",
+        "--input-conf={inputconf}",
+        "--no-input-default-bindings",
+        "--vo=drm",
+        "--hwdec=v4l2m2m-copy",
+        "--framedrop=vo",
+        "--vd-lavc-threads=1",
+        "--keep-open=no",
+        "--audio-display=no",
+        "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
+        "--network-timeout=30",
+        "--cache=yes",
+        "--demuxer-max-bytes=16MiB",
+        "--demuxer-readahead-secs=20",
+        "--ytdl=no",
+        "--sub-auto=no",
+        "--sub-font-size=42",
+        "--sub-border-size=2.5",
+        "--sub-pos=94"
+      ],
+      "noise_graph": "av://lavfi:nullsrc=s=96x72:r=12,geq=random(1)*255:128:128",
+      "black_graph": "av://lavfi:color=c=black:s=160x120:r=5",
+      "mono": true
+    },
+    "mac-bw": {
+      "mpv": [
+        "mpv",
+        "--idle=yes",
+        "--force-window=yes",
+        "--no-terminal",
+        "--no-config",
+        "--osc=no",
+        "--input-ipc-server={sock}",
+        "--input-conf={inputconf}",
+        "--no-input-default-bindings",
+        "--title=${force-media-title}",
+        "--geometry=720x540",
+        "--keep-open=no",
+        "--audio-display=no",
+        "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
+        "--network-timeout=30",
+        "--cache=yes",
+        "--demuxer-max-bytes=64MiB",
+        "--ytdl=no",
+        "--sub-auto=no",
+        "--sub-font-size=42",
+        "--sub-border-size=2.5",
+        "--sub-pos=94"
+      ],
+      "noise_graph": "av://lavfi:nullsrc=s=192x144:r=15,geq=random(1)*255:128:128",
+      "black_graph": "av://lavfi:color=c=black:s=320x240:r=5",
+      "mono": true,
+      "_note": "Black-and-white preview on the Mac."
+    },
+    "hdmi-bw": {
+      "_note": "Black-and-white screen on HDMI.",
+      "mpv": [
+        "mpv",
+        "--idle=yes",
+        "--force-window=yes",
+        "--no-terminal",
+        "--no-config",
+        "--osc=no",
+        "--input-ipc-server={sock}",
+        "--input-conf={inputconf}",
+        "--no-input-default-bindings",
+        "--vo=drm",
+        "--hwdec=v4l2m2m-copy",
+        "--framedrop=vo",
+        "--vd-lavc-threads=1",
+        "--keep-open=no",
+        "--audio-display=no",
+        "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
+        "--network-timeout=30",
+        "--cache=yes",
+        "--demuxer-max-bytes=16MiB",
+        "--demuxer-readahead-secs=20",
+        "--ytdl=no",
+        "--sub-auto=no",
+        "--sub-font-size=42",
+        "--sub-border-size=2.5",
+        "--sub-pos=94"
+      ],
+      "noise_graph": "av://lavfi:nullsrc=s=160x90:r=12,geq=random(1)*255:128:128",
+      "black_graph": "av://lavfi:color=c=black:s=160x90:r=5",
+      "mono": true
     }
   },
   "remember": true,
@@ -109,5 +217,7 @@
     "enabled": false,
     "name": "Spelunkr TV",
     "wake_tv": true
-  }
+  },
+  "prefetch_s": 60,
+  "test_card": true
 }

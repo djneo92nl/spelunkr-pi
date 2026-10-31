@@ -1,7 +1,7 @@
 """Input sources. Each source pushes command strings onto a queue; the TV loop never cares where they came from.
 
 Commands: up, down, left, right, last, info, guide, fullscreen, mute, volup, voldown, wheel_up, wheel_down,
-          click, channel:<dial|id>, quit, enter, digit:<0-9>
+          click, channel:<dial|id>, diag, help, captions, testcard, back, quit, enter, digit:<0-9>
 
 To add GPIO buttons or a USB remote later, write another class with start(put) / stop() and add it in tv.py:
 
@@ -21,12 +21,13 @@ import threading
 # mpv key name -> command. Used for keys pressed in mpv's own window.
 KEY_BINDINGS = {"UP": "up", "DOWN": "down", "PGUP": "up", "PGDWN": "down", "+": "up", "-": "down",
                 "LEFT": "left", "RIGHT": "right", "ENTER": "enter", "i": "info", "g": "guide", "l": "last", "q": "quit", "f": "fullscreen", "MBTN_LEFT_DBL": "fullscreen", "MBTN_LEFT": "click",
-                "m": "mute", "[": "voldown", "]": "volup", "WHEEL_UP": "wheel_up", "WHEEL_DOWN": "wheel_down",
+                "m": "mute", "[": "voldown", "]": "volup", "d": "diag", "?": "help", "h": "help", "c": "captions", "t": "testcard", "WHEEL_UP": "wheel_up", "WHEEL_DOWN": "wheel_down",
                 "NEXT": "up", "PREV": "down", "PLAYPAUSE": "mute",
                 **{str(d): f"digit:{d}" for d in range(10)}}
 
 _CHAR_KEYS = {"+": "up", "=": "up", "-": "down", "_": "down", "k": "up", "j": "down", "i": "info",
-              "g": "guide", "l": "last", "q": "quit", "f": "fullscreen", "m": "mute", "[": "voldown", "]": "volup", "\r": "enter", "\n": "enter",
+              "g": "guide", "l": "last", "q": "quit", "f": "fullscreen", "m": "mute", "[": "voldown", "]": "volup", "d": "diag", "?": "help", "h": "help", "c": "captions",
+              "t": "testcard", "\r": "enter", "\n": "enter",
               **{str(d): f"digit:{d}" for d in range(10)}}
 _ESC_KEYS = {"[A": "up", "[B": "down", "[C": "right", "[D": "left", "OC": "right", "OD": "left", "[5~": "up", "[6~": "down", "OA": "up", "OB": "down"}
 

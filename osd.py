@@ -188,7 +188,10 @@ def tune_card(chan, status=(), opaque=False):
     return "\n".join(lines)
 
 
-def stand_by(reason=""):
+def stand_by(reason="", test_card_bg=True):
+    """"PLEASE STAND BY" over the colour-bar test card (or plain black if test_card_bg is False)."""
+    if test_card_bg:
+        return test_card("PLEASE STAND BY", reason)
     lines = [text(W // 2, H // 2 - 30, "PLEASE STAND BY", 52, an=5)]
     if reason:
         lines.append(text(W // 2, H // 2 + 40, wrap(reason, 40), 24, "&HC0C0C0&", an=5))
@@ -285,3 +288,76 @@ def volume_toast(level, muted):
         cx = x0 + 68 + i * 17
         lines.append(rect(cx, y0 + 14, cx + 13, y0 + bh - 14, "&H40D0FF&" if i < filled else "&H605040&"))
     return "\n".join(lines)
+
+
+# ---- test card ----
+_BARS = ["&HBFBFBF&", "&H00BFBF&", "&HBFBF00&", "&H00BF00&", "&HBF00BF&", "&H0000BF&", "&HBF0000&"]   # 75% EBU-style bars (BGR)
+_REV = ["&HBF0000&", "&H101010&", "&HBF00BF&", "&H101010&", "&HBFBF00&", "&H101010&", "&HBFBFBF&"]
+
+
+def test_card(title="", sub="", footer="spelunkr.tv"):
+    """Colour bars with a label box: for stand-by / technical difficulties, and the `t` key."""
+    lines = []
+    top, mid = int(H * 0.64), int(H * 0.76)
+    for i in range(7):
+        x0, x1 = W * i // 7, W * (i + 1) // 7
+        lines.append(rect(x0, 0, x1, top, _BARS[i]))
+        lines.append(rect(x0, top, x1, mid, _REV[i]))
+    quarter = W // 4
+    for i, c in enumerate(("&H4C2100&", "&HFFFFFF&", "&H6A0032&", "&H090909&")):     # -I, white, +Q, black
+        lines.append(rect(quarter * i, mid, quarter * (i + 1) if i < 3 else W, H, c))
+    bw, bh = int(W * 0.60), 108 if sub else 78
+    x0, y0 = (W - bw) // 2, int(H * 0.28)
+    lines.append(rect(x0, y0, x0 + bw, y0 + bh, "&H000000&", alpha="18"))
+    lines.append(text(W // 2, y0 + 12, esc(title), 40, an=8))
+    if sub:
+        lines.append(text(W // 2, y0 + 64, esc(sub), 22, "&HC0C0C0&", an=8, border=1))
+    lines.append(text(W // 2, H - SAFE_Y + 6, esc(footer), 18, "&H00FFFF&", an=2, border=2))
+    return "\n".join(lines)
+
+
+# ---- diagnostics box, help screen, text toast ----
+def diag_panel(lines):
+    """Translucent box top-left with one line of text per entry (the first is brighter)."""
+    lh, x0, y0 = 20, SAFE_X - 14, SAFE_Y - 14
+    w = min(W - 2 * x0, 600)
+    out = [rect(x0, y0, x0 + w, y0 + 12 + lh * len(lines), "&H000000&", alpha="40")]
+    for i, ln in enumerate(lines):
+        out.append(text(x0 + 10, y0 + 8 + i * lh, esc(ln), 15, "&HFFFFFF&" if i == 0 else "&HD0D0D0&", bold=False, border=1))
+    return "\n".join(out)
+
+
+HELP_KEYS = [
+    ("UP / DOWN", "channel up / down"), ("0-9, ENTER", "jump to a channel"), ("L", "last channel"),
+    ("I / ENTER", "info bar"), ("G", "TV guide"), ("C", "captions on / off"),
+    ("M, [ , ]", "mute, volume"), ("D", "diagnostics"), ("T", "test card"),
+    ("F", "fullscreen"), ("? / H", "this screen"), ("Q", "quit"),
+]
+
+
+def help_screen(info_lines):
+    out = [rect(0, 0, W, H, "&H180C04&"), text(SAFE_X, SAFE_Y - 6, "SPELUNKR TV", 34, "&H40D0FF&"),
+           text(W - SAFE_X, SAFE_Y - 2, "HELP & STATUS", 22, "&HC0C0C0&", an=9, border=1)]
+    rows = (len(HELP_KEYS) + 1) // 2
+    col_w = (W - 2 * SAFE_X) // 2
+    for i, (k, v) in enumerate(HELP_KEYS):
+        x = SAFE_X + (i // rows) * col_w
+        y = SAFE_Y + 56 + (i % rows) * 30
+        out.append(text(x, y, k, 19, "&H40D0FF&", border=1))
+        out.append(text(x + 140, y, v, 19, border=1))
+    y = SAFE_Y + 56 + rows * 30 + 12
+    out.append(rect(SAFE_X, y, W - SAFE_X, y + 2, "&H806040&"))
+    y += 14
+    for ln in info_lines:
+        out.append(text(SAFE_X, y, esc(ln), 18, "&HD0D0D0&", bold=False, border=1))
+        y += 25
+    out.append(text(W // 2, H - SAFE_Y + 14, "any key closes this screen", 16, "&H909090&", an=2, border=0))
+    return "\n".join(out)
+
+
+def toast_text(msg):
+    """Small box top-right with a line of text (captions on/off ...)."""
+    bw = max(200, 20 + 14 * len(msg))
+    x1, y0 = W - SAFE_X, SAFE_Y
+    return "\n".join([rect(x1 - bw, y0, x1, y0 + 46, "&H201008&", alpha="30"),
+                      text(x1 - bw + 12, y0 + 11, esc(msg), 22)])

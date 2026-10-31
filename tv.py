@@ -20,11 +20,13 @@ from urllib.parse import quote
 
 import inputs
 import osd
+import prefetch
 import schedule as S
+import subs as subsmod
 from mpvctl import Mpv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST = 1, 2, 3, 4, 5
+OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_PANEL = 1, 2, 3, 4, 5, 6, 7
 
 
 def load_config(path, profile=None):
@@ -161,11 +163,25 @@ class TV:
         self.volume, self.muted = 100, False
         self.toast_until = 0
         self.wheel_at = 0
+        self.prefetch = prefetch.Prefetcher()
+        self.subs = subsmod.Subtitles(cfg["cache_dir"], lambda: self.src.lineup)
+        self.captions = False
+        self.diag = False
+        self.diag_at = 0
+        self.panel, self.panel_at = None, 0       # "help" or "testcard": full-screen, any key closes
+        self.last_load = None                     # seconds from loadfile to first frame, for the diagnostics box
+        self.load_started = None
+        self.media_orig = None                    # the original (redirecting) URL of what is playing
+        self.prefetched_key = None
+        self.gain = 0              # what mpv currently has
+        self.want_gain = 0         # what the current entry wants (ads are turned down by their gainDb)
+        self.web_url = None
+        self.sys_cache = (0, "")
 
     # ---- lifecycle ----
     def run(self):
         bindings = dict(inputs.KEY_BINDINGS)
-        self.mpv = Mpv(self.cfg["prof"]["mpv"], bindings)
+        self.mpv = Mpv(self.cfg["prof"]["mpv"], bindings, mono=bool(self.cfg["prof"].get("mono")))
         threading.Thread(target=self._pump_mpv, daemon=True).start()
         threading.Thread(target=self._guide_worker, daemon=True).start()
         for i, prop in enumerate(("osd-width", "osd-height"), 1):
@@ -175,6 +191,7 @@ class TV:
             if isinstance(st.get("volume"), (int, float)):
                 self.volume = st["volume"]          # applied through mpv's start-up options (see main)
             self.muted = bool(st.get("muted"))
+            self.captions = bool(st.get("captions"))
         kb = inputs.KeyboardInput()
         kb.start(lambda c: self.q.put(("cmd", c)))
         for extra in self.extra_inputs:
@@ -208,7 +225,7 @@ class TV:
             time.sleep(max(0, float(secs) - (time.time() - t0)))
             self.mpv.request("screenshot-to-file", path, "window")
             print(f"[debug {secs}s] entry={self.cur and self.cur['entry']['type']} path={self.mpv.get('path')} "
-                  f"title={self.mpv.get('media-title')!r} vol={self.mpv.get('volume')} mute={self.mpv.get('mute')} time-pos={self.mpv.get('time-pos')} idle={self.mpv.get('idle-active')} err={self.error!r}",
+                  f"title={self.mpv.get('media-title')!r} sat={self.mpv.get('saturation')} want={self.want_gain} gain={self.mpv.get('volume-gain')} direct={bool(self.media_orig and self.prefetch.is_resolved(self.media_orig))} load={self.last_load} vol={self.mpv.get('volume')} mute={self.mpv.get('mute')} time-pos={self.mpv.get('time-pos')} idle={self.mpv.get('idle-active')} err={self.error!r}",
                   file=sys.stderr)
         time.sleep(0.5)
         self.q.put(("exit", None))
@@ -248,9 +265,16 @@ class TV:
                         self.loading["stage"] = "buffer"
                         self.draw_loading(force=True)
                     else:
+                        if self.load_started:
+                            self.last_load = round(time.time() - self.load_started, 1)
                         self.finish_loading()
+                        self.apply_gain()
+                        if self.captions:
+                            self.request_captions()
         elif kind == "bundle":
             self.on_bundle(*val)
+        elif kind == "subs":
+            self.on_subs(*val)
         else:
             self.command(val)
 
@@ -276,6 +300,18 @@ class TV:
             c = "info"                               # OK / Select with nothing else going on shows the info bar
         if c in ("volup", "voldown", "mute"):
             self.adjust_volume(c)
+            return
+        if self.panel is not None:                   # help / test card: any other key just closes it
+            self.close_panel()
+            return
+        if c == "diag":
+            self.toggle_diag()
+            return
+        if c in ("help", "testcard"):
+            self.open_panel(c)
+            return
+        if c == "captions":
+            self.toggle_captions()
             return
         if c.startswith("channel:"):
             self.tune_to(c[8:])
@@ -371,7 +407,7 @@ class TV:
         ch = self.chan
         snap = {"channel": {"dial": ch["dial"], "id": ch["id"], "name": ch["name"], "color": ch.get("color")},
                 "time_ms": self.src.now_ms(), "volume": self.volume, "muted": self.muted,
-                "guide_open": self.guide is not None, "error": self.error or None,
+                "guide_open": self.guide is not None, "captions": self.captions, "last_load_s": self.last_load, "error": self.error or None,
                 "loading": self.loading["stage"] if self.loading else None, "state": "tuning"}
         r = self.cur
         if r and self.bundle:
@@ -477,7 +513,7 @@ class TV:
         if err:
             self.error = err
             self.loading = None
-            self.mpv.overlay(OVL_SCREEN, osd.stand_by("Schedule unavailable. Trying again..."))
+            self.mpv.overlay(OVL_SCREEN, self.standby_ass("Schedule unavailable. Trying again..."))
             self.screen_key = "standby"
             self.retry_at = time.time() + 10
         else:
@@ -511,7 +547,9 @@ class TV:
             self.toast_until = 0
             self.mpv.overlay(OVL_TOAST, "")
         self.maybe_snapshot(now)
-        if self.guide is None:
+        self.update_diag(now)
+        self.update_panel(now)
+        if self.guide is None and self.panel is None:
             self.draw_loading()
         if self.retry_at and now < self.retry_at:
             return
@@ -528,7 +566,7 @@ class TV:
             self.error = f"{type(ex).__name__}: {ex}"
             self.bundle = None
             self.loading = None
-            self.mpv.overlay(OVL_SCREEN, osd.stand_by("Trying again..."))
+            self.mpv.overlay(OVL_SCREEN, self.standby_ass("Trying again..."))
             self.screen_key = "standby"
             self.retry_at = now + 10
             return
@@ -541,11 +579,12 @@ class TV:
             self.retry_at = 0
             self.start_entry(r, t)
         self.cur = r
-        if self.guide is None:
+        if self.guide is not None:
+            self.refresh_guide_clock()
+        elif self.panel is None:
             self.update_screen(r, t)
             self.update_bar(r, t)
-        else:
-            self.refresh_guide_clock()
+        self.maybe_prefetch(r)
         self.check_drift(r, t)
 
     def start_entry(self, r, t):
@@ -555,12 +594,15 @@ class TV:
             self.set_title(f"CH {self.chan['dial']} · {e['item']['title']}")
         else:
             self.set_title(f"CH {self.chan['dial']} · {self.chan['name']}")
+        self.set_gain(0)
         if kind == "video":
             it = e["item"]
             base = float(it.get("inS") or 0)
             self.play_media(S.media_url(it), base, r)
         elif kind == "ad":
             sl = e["slice"]
+            gain = sl.get("gainDb")                         # the site only ever turns ads down, never up
+            self.set_gain(gain if isinstance(gain, (int, float)) and gain < 0 else 0)
             self.play_media(S.ad_url(sl), sl["inMs"] / 1000.0, r)
         else:
             self.play_black(r["remaining_s"] + 0.5)
@@ -574,6 +616,9 @@ class TV:
 
     def play_media(self, url, base, r):
         self.media_base = base
+        self.media_orig = url
+        url = self.prefetch.direct(url)                      # the resolved item-server URL when we have one (saves ~2 s)
+        self.load_started = time.time()
         self.expect_url = url
         self.loading = {"stage": "connect", "since": (self.loading or {}).get("since", time.time())}
         self.screen_key = None
@@ -617,6 +662,8 @@ class TV:
 
     # ---- guide ----
     def open_guide(self):
+        if self.panel is not None:
+            self.close_panel()
         t = self.src.now_ms()
         self.guide = {"sel": self.idx, "off_ms": 0, "rows": {}, "t0": t, "asked": set(), "minute": t // 60000}
         self.mpv.overlay(OVL_BAR, "")
@@ -701,6 +748,199 @@ class TV:
                 g["rows"][cid] = progs
                 self.q.put(("guide", None))
 
+    # ---- full-screen panels (help / test card) ----
+    def standby_ass(self, reason=""):
+        return osd.stand_by(reason, self.cfg.get("test_card", True))
+
+    def open_panel(self, kind):
+        if self.guide is not None:
+            self.close_guide()
+        self.panel, self.panel_at = kind, 0
+        self.mpv.overlay(OVL_BAR, "")
+        self.mpv.overlay(OVL_SCREEN, "")
+        self.screen_key = None
+        self.update_panel(time.time())
+
+    def close_panel(self):
+        self.panel = None
+        self.mpv.overlay(OVL_PANEL, "")
+        self.screen_key, self.bar_second, self.load_tick = None, None, None
+        self.draw_loading(force=True)
+
+    def update_panel(self, now):
+        if self.panel is None or now - self.panel_at < (2 if self.panel == "help" else 3600):
+            return
+        self.panel_at = now
+        if self.panel == "testcard":
+            ass = osd.test_card("SPELUNKR TV", f"CH {self.chan['dial']}  {self.chan['name']}")
+        else:
+            ass = osd.help_screen(self.help_lines())
+        self.mpv.overlay(OVL_PANEL, ass)
+
+    def help_lines(self):
+        import webremote
+        skew = self.src.skew_ms / 1000
+        w, h = self.win.get("osd-width"), self.win.get("osd-height")
+        lines = [f"profile {self.cfg['profile']}    display {w}x{h}    mpv overlays {osd.W}x{osd.H}",
+                 f"remote  {self.web_url or 'off (start with --web)'}",
+                 f"this device  {webremote.lan_ip()}",
+                 "clock  in sync with the server" if not skew else f"clock  {skew:+.0f}s off the server (corrected)",
+                 f"channels {len(self.chans)}    lineup {str(self.src.lineup.get('generatedAt', '?'))[:16]}",
+                 f"captions {'on' if self.captions else 'off'}    cec {'on' if self.cfg.get('cec', {}).get('enabled') else 'off'}"]
+        return lines
+
+    # ---- diagnostics box ----
+    def toggle_diag(self):
+        self.diag = not self.diag
+        self.diag_at = 0
+        if not self.diag:
+            self.mpv.overlay(OVL_DIAG, "")
+        else:
+            self.update_diag(time.time())
+
+    def update_diag(self, now):
+        if not self.diag or now - self.diag_at < 1:
+            return
+        self.diag_at = now
+        self.mpv.overlay(OVL_DIAG, osd.diag_panel(self.diag_lines()))
+
+    def _sys_line(self, now):
+        if now - self.sys_cache[0] < 10:
+            return self.sys_cache[1]
+        parts = []
+        try:
+            parts.append(f"{int(open('/sys/class/thermal/thermal_zone0/temp').read()) / 1000:.0f}C")
+        except (OSError, ValueError):
+            pass
+        try:
+            parts.append(f"load {os.getloadavg()[0]:.2f}")
+            for ln in open("/proc/meminfo"):
+                if ln.startswith("MemAvailable"):
+                    parts.append(f"{int(ln.split()[1]) // 1024}MB free")
+                    break
+        except OSError:
+            pass
+        import shutil
+        import subprocess
+        if shutil.which("vcgencmd"):
+            try:
+                v = int(subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=2)
+                        .stdout.strip().split("=")[1], 16)
+                flags = [name for bit, name in ((0, "UNDERVOLTAGE"), (2, "THROTTLED"), (3, "TEMP LIMIT")) if v & (1 << bit)]
+                parts.append("power ok" if not flags else " ".join(flags))
+            except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+                pass
+        self.sys_cache = (now, "   ".join(parts))
+        return self.sys_cache[1]
+
+    def diag_lines(self):
+        def g(prop):
+            return self.mpv.request("get_property", prop, timeout=0.25)
+
+        def num(v, fmt="{:.1f}", none="?"):
+            return fmt.format(v) if isinstance(v, (int, float)) else none
+
+        now, r = time.time(), self.cur
+        what = f"{r['entry']['type']}  v{r['version']} cycle {r['cycle']}" if r else (
+            f"loading ({self.loading['stage']})" if self.loading else "idle")
+        lines = [f"DIAGNOSTICS   CH {self.chan['dial']} {self.chan['name']}   {what}"]
+        if r and self.media_base is not None and r["entry"]["type"] in ("video", "ad") and not self.loading:
+            pos = g("time-pos")
+            want = self.media_base + (self.src.now_ms() - r["start_ms"]) / 1000
+            vp = g("video-params") or {}
+            kbps = g("video-bitrate")
+            lines += [
+                f"position {num(pos)}s   schedule {num(want)}s   drift {num(pos - want if pos is not None else None, '{:+.1f}')}s",
+                f"{g('video-format') or '?'} {vp.get('w', '?')}x{vp.get('h', '?')}  {num(g('estimated-vf-fps'))} fps   "
+                f"decoder: {g('hwdec-current') or 'software'}",
+                f"dropped: decoder {g('decoder-frame-drop-count')}  output {g('frame-drop-count')}   "
+                f"a/v sync {num(g('avsync'), '{:+.2f}')}s",
+                f"cache {num(g('demuxer-cache-duration'))}s   bitrate {num(kbps / 1000 if kbps else None, '{:.0f}')} kbps"]
+        direct = self.media_orig and self.prefetch.is_resolved(self.media_orig)
+        lines.append(f"last start {num(self.last_load)}s  ({'direct url' if direct else 'via redirect'})   "
+                     f"volume {self.volume}{' muted' if self.muted else ''}")
+        lines.append(f"lineup {int(now - self.src._checked)}s old   clock skew {self.src.skew_ms / 1000:+.1f}s"
+                     + (f"   ERROR {self.error[:40]}" if self.error else ""))
+        sysl = self._sys_line(now)
+        if sysl:
+            lines.append(sysl)
+        return lines
+
+    # ---- captions ----
+    def toast(self, ass, secs=1.8):
+        self.mpv.overlay(OVL_TOAST, ass)
+        self.toast_until = time.time() + secs
+
+    def toggle_captions(self):
+        self.captions = not self.captions
+        self.store.save(captions=self.captions)
+        if self.captions:
+            self.toast(osd.toast_text("CAPTIONS ON"))
+            self.request_captions(announce=True)
+        else:
+            self.mpv.command("set", "sub-visibility", "no")
+            self.toast(osd.toast_text("CAPTIONS OFF"))
+
+    def request_captions(self, announce=False):
+        r = self.cur
+        if not r or r["entry"]["type"] != "video":
+            return
+        item, key = r["entry"]["item"], self.key
+
+        def work():
+            try:
+                res = self.subs.for_item(item)
+            except Exception:
+                res = None
+            self.q.put(("subs", (key, res, announce)))
+        threading.Thread(target=work, daemon=True, name="captions").start()
+
+    def on_subs(self, key, res, announce):
+        if key != self.key or not self.captions:
+            return                                   # the show changed, or captions were switched off meanwhile
+        if res:
+            path, entry = res
+            self.mpv.command("sub-add", path, "select")
+            self.mpv.command("set", "sub-visibility", "yes")
+            label = "SUBTITLES BY MACHINE" if entry.get("source") == "machine" else "SUBTITLES"
+            self.toast(osd.toast_text(label), 2.5)
+        elif announce:
+            self.toast(osd.toast_text("NO CAPTIONS FOR THIS SHOW"))
+
+    # ---- ad loudness, prefetch ----
+    def set_gain(self, db):
+        """Remember the wanted gain; mpv only accepts it once audio is up, so it is applied after each load."""
+        self.want_gain = db
+
+    def apply_gain(self):
+        if self.want_gain != self.gain:
+            self.gain = self.want_gain
+            self.mpv.command("set_property", "volume-gain", self.want_gain)
+
+    def next_media_url(self, r):
+        ch, manifests, platforms = self.bundle
+        t = int(r["end_ms"]) + 1
+        for _ in range(4):
+            nr = S.now_playing(ch, manifests, platforms, t)
+            e = nr["entry"]
+            if e["type"] == "video":
+                return S.media_url(e["item"])
+            if e["type"] == "ad":
+                return S.ad_url(e["slice"])
+            t = int(nr["end_ms"]) + 1
+        return None
+
+    def maybe_prefetch(self, r):
+        if self.loading or self.key == self.prefetched_key or r["remaining_s"] > self.cfg.get("prefetch_s", 60):
+            return
+        self.prefetched_key = self.key
+        try:
+            url = self.next_media_url(r)
+        except Exception:
+            url = None
+        if url:
+            self.prefetch.warm(url)
+
     # ---- sync & errors ----
     def check_drift(self, r, t):
         if self.media_base is None or r["entry"]["type"] not in ("video", "ad"):
@@ -721,6 +961,8 @@ class TV:
             return
         if self.cur["entry"]["type"] not in ("video", "ad"):
             return
+        if self.media_orig and self.prefetch.is_resolved(self.media_orig):
+            self.prefetch.forget(self.media_orig)            # the shortcut may be stale: retry via the original URL
         self.fails += 1
         back = self.cfg["retry_backoff_s"]
         delay = back[min(self.fails - 1, len(back) - 1)]
@@ -730,7 +972,7 @@ class TV:
         self.loading, self.expect_url = None, None
         self.play_black(delay + 1)      # never leave mpv idle: it shows a stale frame
         note = "Signal lost. Archive.org may be slow." if self.fails >= 3 else "Reconnecting..."
-        self.mpv.overlay(OVL_SCREEN, osd.stand_by(note))
+        self.mpv.overlay(OVL_SCREEN, self.standby_ass(note))
         self.screen_key = "standby"
 
 
@@ -742,6 +984,7 @@ def create(argv=None):
     ap.add_argument("--channel", help="dial number or channel id")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--fs", action="store_true", help="start fullscreen")
+    ap.add_argument("--mono", action="store_true", help="black-and-white screen: grayscale video and overlays")
     ap.add_argument("--web", action="store_true", help="start the web remote / JSON API (see webremote.py)")
     ap.add_argument("--web-port", type=int)
     ap.add_argument("--web-token", help="require this token for the web remote")
@@ -749,6 +992,10 @@ def create(argv=None):
     ap.add_argument("--mpv-arg", action="append", default=[], metavar="ARG", help="extra mpv option, repeatable")
     a = ap.parse_args(argv)
     cfg = load_config(a.config, a.profile)
+    if a.mono:
+        cfg["prof"]["mono"] = True
+    if cfg["prof"].get("mono") and not any(x.startswith("--saturation") for x in cfg["prof"]["mpv"] + a.mpv_arg):
+        cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + ["--saturation=-100"]      # grayscale picture
     cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + (["--fs"] if a.fs else []) + a.mpv_arg
     src = Source(cfg)
     chans = src.channels()
@@ -791,6 +1038,7 @@ def create(argv=None):
             print(f"web remote could not start on {host}:{port}: {ex}", file=sys.stderr)
         else:
             shown = webremote.lan_ip() if host in ("0.0.0.0", "") else host
+            tv.web_url = f"http://{shown}:{port}/"
             print(f"web remote: http://{shown}:{port}/" + (f"?token={token}" if token else ""), file=sys.stderr)
             if not token and host not in ("127.0.0.1", "localhost"):
                 print("  note: no token set; anyone on this network can use the remote", file=sys.stderr)

@@ -4,7 +4,7 @@
     GET  /api/status             what is on now (channel, show, offset, next, volume ...)
     GET  /api/channels           channel list
     POST /api/channel/<dial|id>  tune, e.g. /api/channel/203 or /api/channel/ray-gun
-    POST /api/key/<name>         up down last info guide fullscreen mute volup voldown left right enter
+    POST /api/key/<name>         up down last info guide fullscreen mute volup voldown left right enter captions diag help testcard
     POST /api/volume/<up|down|mute>
 
 Safety: POSTs need a custom header (X-Remote: 1, or X-Token when a token is configured), which browsers will not send
@@ -18,7 +18,8 @@ import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-KEYS = {"up", "down", "last", "info", "guide", "fullscreen", "mute", "volup", "voldown", "left", "right", "enter"}
+KEYS = {"up", "down", "last", "info", "guide", "fullscreen", "mute", "volup", "voldown", "left", "right", "enter",
+        "captions", "diag", "help", "testcard"}
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">

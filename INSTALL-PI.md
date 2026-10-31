@@ -144,6 +144,12 @@ Reboot:
 sudo reboot
 ```
 
+## 6a. Black-and-white screens
+
+For a monochrome display use the `pi-bw` profile (grayscale video and gray overlays) everywhere this guide says `--profile pi`, and add
+`sdtv_disable_colourburst=1` to `config.txt` (with the other composite lines) for a sharper picture. **(unverified on a Pi: if the video is
+still coloured, add `--vf=lavfi=[hue=s=0]` to the profile; it costs CPU.)**
+
 ## 6b. Alternative: HDMI instead of composite
 
 HDMI is the easy way to test the Pi (or to use a normal TV) and needs **no composite settings**: skip step 6, leave the `config.txt`
@@ -173,6 +179,10 @@ Keys: `up`/`down` change channel, digits then `Enter` jump to a channel number, 
 
 Things to check and note: does the picture fill the screen, are the overlays readable and inside the edges (they keep a ~7 % margin),
 does it stutter, does it have sound.
+
+**Tuning screens:** press `d` for the diagnostics box (decoder, dropped frames, cache, CPU temperature and power warnings),
+`?` for the key list and status, `t` for a test card (handy for centring the picture and checking colours).
+A power warning ("UNDERVOLTAGE") means the power supply or cable is too weak; fix that before judging stutter.
 
 **Sound:** the default output may be HDMI. List the cards and pick the 3.5 mm jack:
 

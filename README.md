@@ -25,6 +25,10 @@ Keys (terminal, or inside mpv's window):
 | `g` | TV guide |
 | `f` (or double-click) | fullscreen |
 | `m` (or the play/pause media key), `[`, `]` | mute, volume down, volume up |
+| `c` | captions on / off |
+| `d` | diagnostics box on / off |
+| `?` or `h` | help and status screen |
+| `t` | test card |
 | `q` | quit (closes the guide first, if it is open) |
 
 Start fullscreen with `python3 tv.py --fs`. Extra mpv options: `--mpv-arg=--geometry=1280x720` (repeatable).
@@ -69,7 +73,17 @@ Open `https://spelunkr.tv/<channel-id>` next to it and compare. Expect about ±1
   `up`/`down` pick a channel, `left`/`right` move the window by 30 min (up to +10 h), `Enter` tunes to the selected channel,
   `g` or `q` closes it. Rows load one by one in the background (a channel's manifest is fetched the first time it is shown),
   and the other channels' schedules are freed again when you close it.
-* **Trouble**: "PLEASE STAND BY" on black, with growing back-off (2, 5, 10, 20 s) while archive.org is slow or down.
+* **Captions** (`c`): the site's own subtitle files (about 170 tapes: mostly machine-translated anime and foreign commercials; the box says
+  `SUBTITLES BY MACHINE` where that is the case). Shows without captions say so. Your choice is remembered.
+* **Diagnostics** (`d`): a box in the corner with the playback position against the schedule (drift), decoder in use and whether it is
+  hardware, dropped frames, cache, bitrate, how long the last start took, and on a Pi the temperature, load, free memory and
+  **undervoltage / throttling warnings**. Stays on while you change channel. This is the screen to look at when tuning the Pi.
+* **Help and status** (`?`): the keys, plus the remote's address, this device's IP, clock sync and lineup version.
+* **Test card** (`t`): PAL-style colour bars. It is also the background of "PLEASE STAND BY" (`"test_card": false` for plain black).
+* **Faster starts**: about a minute before a show ends, the next item's archive.org redirect is resolved and the file warmed with a tiny
+  request, so mpv connects straight to the item server (saves about 2 s, more on a cold file). If that shortcut ever fails it falls back
+  automatically. **Ad loudness**: ads that carry a `gainDb` are turned down by that amount, as the site does.
+* **Trouble**: "PLEASE STAND BY" on the test card, with growing back-off (2, 5, 10, 20 s) while archive.org is slow or down.
   Schedule data keeps working from the disk cache.
 
 ## Web remote and JSON API
@@ -129,9 +143,17 @@ real TV. If a key does nothing, run `cec-client -d 16` on the Pi, press it, and 
 `config.json`. Important keys: `start_channel`, `bar_seconds`, `bumps` (set false to skip slides),
 `noise` (`"lavfi"` or `"none"`), `drift_s` (re-seek if playback is more than this many seconds off the schedule),
 `remember`, `web` and `cec` (see above), and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
-Profiles: `mac`, `pi` (composite), `hdmi` (Pi on HDMI/TV). The overlays follow the window or display shape (4:3 or 16:9), also when you resize.
+Profiles: `mac`, `pi` (composite), `hdmi` (Pi on HDMI/TV), and black-and-white versions `mac-bw`, `pi-bw`, `hdmi-bw`. The overlays follow the window or display shape (4:3 or 16:9), also when you resize.
 Choose a profile with `--profile pi` or the `profile` key. Cache: `~/.cache/spelunkr` (lineup refreshed every 10 min,
 manifests kept per version).
+
+## Black-and-white screens
+
+For a monochrome display use `--profile pi-bw` (or `hdmi-bw` / `mac-bw`), or add `--mono` to any profile. The picture is rendered in
+grayscale (`--saturation=-100`) and **every overlay colour** (info bar, guide, slides, test card) is converted to a matching gray, so
+nothing disappears when two colours would look alike. On the Pi's composite output also add `sdtv_disable_colourburst=1` to `config.txt`
+for a sharper monochrome picture. If the picture is still coloured on your decoder, add `--vf=lavfi=[hue=s=0]` to the profile's `mpv` list
+(uses the CPU).
 
 ## Raspberry Pi 1B
 
@@ -190,6 +212,8 @@ the Pi 3 fallback will not need any change.
 | `mpvctl.py` | mpv JSON-IPC controller |
 | `inputs.py` | keyboard / mpv-window input; add GPIO here |
 | `webremote.py` | web remote + JSON API |
+| `subs.py` | captions: the site's subtitle files as SRT for mpv |
+| `prefetch.py` | resolves the next item's archive.org URL ahead of time |
 | `mac/` | `make_app.sh` (builds the .app), `menubar.py` (menu bar item), `make_icon.py` |
 | `pi/` | probe script, setup script, systemd unit |
 | `tools/verify_guide.py` | compare against the site's guide |
@@ -198,6 +222,7 @@ the Pi 3 fallback will not need any change.
 
 * Guide: no show descriptions (the site's `details/` files have them), and it only lists programmes, not breaks.
 * Audio for `vacation-slides` (audio overlay channel) and the bump music; video and slides only.
+* Prefetch: measured to help (a start took 4 s through the shortcut against 37 s cold), but each file is different, so treat the numbers as indicative.
 * Everything on the Pi hardware.
 * The menu bar item (needs `rumps`; written but never run).
 * Window position is not remembered on the Mac (mpv does not expose it); size and fullscreen are.
