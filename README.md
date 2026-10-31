@@ -21,8 +21,12 @@ Keys (terminal, or inside mpv's window):
 | `up` / `down`, `+` / `-` | channel up / down (also the scroll wheel, and the Mac's next / previous media keys) |
 | digits, then `Enter` | jump to a dial number (`2`, `0`, `3`, `Enter` for 203) |
 | `l` | last channel |
-| `i` (or a click in the window) | info bar |
+| `i` | info bar; press again while it is showing for the show's details |
+| a click in the window | info bar (a click while something is open closes it) |
 | `g` | TV guide |
+| `n` | what is on now (all channels, one line each) |
+| `s` | settings menu |
+| `z` | sleep timer: off, 15, 30, 60, 90, 120 minutes |
 | `f` (or double-click) | fullscreen |
 | `m` (or the play/pause media key), `[`, `]` | mute, volume down, volume up |
 | `c` | captions on / off |
@@ -73,6 +77,15 @@ Open `https://spelunkr.tv/<channel-id>` next to it and compare. Expect about ±1
   `up`/`down` pick a channel, `left`/`right` move the window by 30 min (up to +10 h), `Enter` tunes to the selected channel,
   `g` or `q` closes it. Rows load one by one in the background (a channel's manifest is fetched the first time it is shown),
   and the other channels' schedules are freed again when you close it.
+* **Boot splash**: the pixel TV and "TUNING IN..." for a couple of seconds at start (`"splash_seconds": 0` skips it).
+* **On now** (`n`): every channel with what it is showing, when that ends and what is next; `up`/`down` pick, `Enter` tunes,
+  `g` switches to the time grid, `n` closes. Rows load in the background like the guide.
+* **Show details** (`i` twice): title, year, runtime, season/episode and the site's own description for the show on air.
+* **Settings** (`s`): volume, captions, how long the info bar stays, static between channels, station-break slides, black and white,
+  sleep timer. `up`/`down` pick, `left`/`right` change. Choices are remembered between runs.
+* **Sleep timer** (`z`, or in the settings menu, or `POST /api/sleep/45`): a minute before it ends a notice says so, and pressing any key
+  cancels it ("still watching"). At zero the picture goes to a "goodnight" screen and archive.org streaming stops; any key wakes it back
+  to the channel it was on. With CEC it also puts the TV into standby. `"sleep_action": "quit"` exits the program instead.
 * **Captions** (`c`): the site's own subtitle files (about 170 tapes: mostly machine-translated anime and foreign commercials; the box says
   `SUBTITLES BY MACHINE` where that is the case). Shows without captions say so. Your choice is remembered.
 * **Diagnostics** (`d`): a box in the corner with the playback position against the schedule (drift), decoder in use and whether it is
@@ -98,7 +111,10 @@ GET  /api/channels           channel list
 POST /api/channel/<dial|id>  e.g. /api/channel/203 or /api/channel/ray-gun
 POST /api/key/<name>         up down last info guide fullscreen mute volup voldown left right enter
 POST /api/volume/<up|down|mute>
+POST /api/sleep/<minutes>    sleep timer, 0 = off
 ```
+
+Keys also include `captions diag help testcard now details menu sleep bar`.
 
 ```bash
 curl http://tv.local:8080/api/status
@@ -128,7 +144,10 @@ SimpLink, EasyLink, ... depending on the brand), then start with `python3 tv.py 
 | OK / Select | info bar |
 | Exit | close the guide |
 | EPG, Guide, Menu, green | TV guide (left/right then move the time window) |
-| Info, yellow | info bar |
+| Info, yellow | info bar (again: show details) |
+| Contents menu | what is on now |
+| Setup menu | settings menu |
+| Subtitle | captions on / off |
 | Previous channel, red | last channel |
 | blue | mute |
 | volume +/-, mute | volume / mute (normally the TV handles these itself) |
@@ -142,7 +161,7 @@ real TV. If a key does nothing, run `cec-client -d 16` on the Pi, press it, and 
 
 `config.json`. Important keys: `start_channel`, `bar_seconds`, `bumps` (set false to skip slides),
 `noise` (`"lavfi"` or `"none"`), `drift_s` (re-seek if playback is more than this many seconds off the schedule),
-`remember`, `web` and `cec` (see above), and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
+`remember`, `web` and `cec` (see above), `splash_seconds`, `sleep_action` (`blank` or `quit`), and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
 Profiles: `mac`, `pi` (composite), `hdmi` (Pi on HDMI/TV), and black-and-white versions `mac-bw`, `pi-bw`, `hdmi-bw`. The overlays follow the window or display shape (4:3 or 16:9), also when you resize.
 Choose a profile with `--profile pi` or the `profile` key. Cache: `~/.cache/spelunkr` (lineup refreshed every 10 min,
 manifests kept per version).
@@ -220,7 +239,7 @@ the Pi 3 fallback will not need any change.
 
 ## Not done yet
 
-* Guide: no show descriptions (the site's `details/` files have them), and it only lists programmes, not breaks.
+* Guide: it only lists programmes, not breaks, and does not show descriptions (the details screen does).
 * Audio for `vacation-slides` (audio overlay channel) and the bump music; video and slides only.
 * Prefetch: measured to help (a start took 4 s through the shortcut against 37 s cold), but each file is different, so treat the numbers as indicative.
 * Everything on the Pi hardware.

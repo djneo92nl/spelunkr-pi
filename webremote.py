@@ -4,8 +4,9 @@
     GET  /api/status             what is on now (channel, show, offset, next, volume ...)
     GET  /api/channels           channel list
     POST /api/channel/<dial|id>  tune, e.g. /api/channel/203 or /api/channel/ray-gun
-    POST /api/key/<name>         up down last info guide fullscreen mute volup voldown left right enter captions diag help testcard
+    POST /api/key/<name>         up down last info guide fullscreen mute volup voldown left right enter captions diag help testcard now details menu sleep
     POST /api/volume/<up|down|mute>
+    POST /api/sleep/<minutes>    sleep timer, 0 = off
 
 Safety: POSTs need a custom header (X-Remote: 1, or X-Token when a token is configured), which browsers will not send
 cross-site, so another website cannot make your TV change channel. Set "web.token" in config.json to also require a secret
@@ -19,7 +20,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KEYS = {"up", "down", "last", "info", "guide", "fullscreen", "mute", "volup", "voldown", "left", "right", "enter",
-        "captions", "diag", "help", "testcard"}
+        "captions", "diag", "help", "testcard", "now", "details", "menu", "sleep", "bar"}
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -57,7 +58,8 @@ button.big{font-size:22px}
 <div class="row"><button class="big" data-k="down" aria-label="Channel down">CH −</button>
   <button data-k="last">Last</button><button class="big" data-k="up" aria-label="Channel up">CH +</button></div>
 <div class="row"><button data-k="voldown">Vol −</button><button data-k="mute" id="mute">Mute</button><button data-k="volup">Vol +</button></div>
-<div class="row"><button data-k="guide">Guide</button><button data-k="info">Info</button><button data-k="fullscreen">Fullscreen</button></div>
+<div class="row"><button data-k="guide">Guide</button><button data-k="now">On now</button><button data-k="info">Info</button></div>
+<div class="row"><button data-k="captions">Captions</button><button data-k="sleep">Sleep</button><button data-k="menu">Settings</button></div>
 <div id="err"></div>
 <h1 style="margin-top:18px">Channels</h1><div class="grid" id="chans"></div>
 <script>
@@ -164,6 +166,12 @@ def start(tv, host="0.0.0.0", port=8080, token=""):
                 tv.send(parts[2])
             elif len(parts) == 3 and parts[:2] == ["api", "volume"] and parts[2] in ("up", "down", "mute"):
                 tv.send({"up": "volup", "down": "voldown", "mute": "mute"}[parts[2]])
+            elif len(parts) == 3 and parts[:2] == ["api", "sleep"]:
+                try:
+                    minutes = float(parts[2])
+                except ValueError:
+                    return self._json({"ok": False, "error": "minutes must be a number"}, 400)
+                tv.send(f"sleep:{minutes}")
             else:
                 return self._json({"ok": False, "error": "not found"}, 404)
             self._json({"ok": True})

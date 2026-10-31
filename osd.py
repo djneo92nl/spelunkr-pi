@@ -74,7 +74,7 @@ def short(s, n):
 
 
 # ---- the cable-box bar ----
-def info_bar(chan, r, upcoming, now_ms):
+def info_bar(chan, r, upcoming, now_ms, sleep_s=None):
     """chan: dict(dial, name, color). r: now_playing() result. upcoming: [{start_ms, item}]."""
     e = r["entry"]
     color = rgb(chan.get("color"))
@@ -86,6 +86,8 @@ def info_bar(chan, r, upcoming, now_ms):
     lines.append(text(x0 + 22, top + 8, f"CH {dial:>3}" if dial is not None else "CH --", 40, color))
     lines.append(text(x0 + 178, top + 14, short(chan["name"].upper(), 24), 30))
     lines.append(text(x1 - 14, top + 14, clock(now_ms), 30, an=9))
+    if sleep_s:
+        lines.append(text(x1 - 14, top + 52, f"SLEEP {mmss(sleep_s)}", 18, "&H80C0FF&", an=9, border=1))
 
     if e["type"] == "video":
         it = e["item"]
@@ -329,7 +331,8 @@ def diag_panel(lines):
 
 HELP_KEYS = [
     ("UP / DOWN", "channel up / down"), ("0-9, ENTER", "jump to a channel"), ("L", "last channel"),
-    ("I / ENTER", "info bar"), ("G", "TV guide"), ("C", "captions on / off"),
+    ("I", "info bar; again = details"), ("G", "TV guide"), ("N", "what is on now"),
+    ("C", "captions on / off"), ("S", "settings"), ("Z", "sleep timer"),
     ("M, [ , ]", "mute, volume"), ("D", "diagnostics"), ("T", "test card"),
     ("F", "fullscreen"), ("? / H", "this screen"), ("Q", "quit"),
 ]
@@ -361,3 +364,157 @@ def toast_text(msg):
     x1, y0 = W - SAFE_X, SAFE_Y
     return "\n".join([rect(x1 - bw, y0, x1, y0 + 46, "&H201008&", alpha="30"),
                       text(x1 - bw + 12, y0 + 11, esc(msg), 22)])
+
+
+# ---- "on now" list: every channel and what it is showing ----
+NOW_ROWS = 9
+_NOW_Y0, _NOW_RH = 96, 46
+
+
+def now_list(rows, sel, first, now_ms):
+    out = [rect(0, 0, W, H, "&H180C04&"),
+           text(SAFE_X, SAFE_Y - 6, "ON NOW", 30, "&H40D0FF&"),
+           text(W - SAFE_X, SAFE_Y - 6, clock(now_ms), 30, an=9)]
+    for i, row in enumerate(rows):
+        y = _NOW_Y0 + i * _NOW_RH
+        chan, selected = row["chan"], first + i == sel
+        if selected:
+            out.append(rect(SAFE_X - 6, y, W - SAFE_X + 6, y + _NOW_RH - 3, "&H603018&", alpha="60"))
+        out.append(text(SAFE_X, y + 8, f"{chan['dial']:>3}", 24, rgb(chan.get("color")), border=1))
+        out.append(text(SAFE_X + 52, y + 14, short(chan["name"], 13).upper(), 14, border=1))
+        progs = row["programs"]
+        x = SAFE_X + 190
+        chars = max(10, int((W - SAFE_X - 150 - x) / 10.5))
+        if not isinstance(progs, list) or not progs:
+            out.append(text(x, y + 12, "loading..." if progs is None else "unavailable", 18, "&H808080&", border=1))
+            continue
+        cur = progs[0]
+        out.append(text(x, y + 3, short(cur["item"]["title"] + year_suffix(cur["item"]), chars), 20, border=1))
+        out.append(text(W - SAFE_X, y + 8, f"until {clock(cur['end_ms'])}", 15, "&HC0C0C0&", an=9, border=1))
+        if len(progs) > 1:
+            out.append(text(x, y + 26, "next: " + short(progs[1]["item"]["title"], chars + 6), 14, "&H909090&", bold=False, border=1))
+    out.append(text(W // 2, H - SAFE_Y + 8, "UP/DOWN channel   ENTER watch   G guide   N close", 16, "&H909090&", an=2, border=0))
+    return "\n".join(out)
+
+
+# ---- show details ----
+def details_screen(chan, item, det, runtime_s):
+    """item: manifest item; det: the site's details entry (description, season, episode, director, stars) or None."""
+    det = det or {}
+    chars = max(30, int((W - 2 * SAFE_X) / 10.5))
+    out = [rect(0, 0, W, H, "&H180C04&"),
+           text(SAFE_X, SAFE_Y - 6, f"CH {chan['dial']}  {esc(chan['name'])}", 22, rgb(chan.get("color")), border=1)]
+    out.append(text(SAFE_X, SAFE_Y + 36, wrap(item["title"], int(chars * 0.62)), 34))
+    meta = []
+    if item.get("year"):
+        meta.append(str(item["year"]))
+    if runtime_s:
+        meta.append(f"{round(runtime_s / 60)} min")
+    if det.get("season") or det.get("episode"):
+        meta.append("S%sE%s" % (det.get("season", "?"), det.get("episode", "?")))
+    n_title = max(1, len(textwrap.wrap(item["title"], int(chars * 0.62))))
+    y = SAFE_Y + 36 + n_title * 42 + 6
+    if meta:
+        out.append(text(SAFE_X, y, "  ·  ".join(meta), 20, "&HC0C0C0&", border=1))
+        y += 36
+    desc = det.get("description")
+    if desc:
+        out.append(text(SAFE_X, y, wrap(desc, chars)[:900], 20, bold=False, border=1))
+        y += 28 * min(9, len(textwrap.wrap(esc(desc), chars))) + 10
+    else:
+        out.append(text(SAFE_X, y, "No description for this one.", 20, "&H909090&", bold=False, border=1))
+        y += 38
+    for label, key in (("Director", "director"), ("Stars", "stars")):
+        v = det.get(key)
+        if v:
+            v = ", ".join(v) if isinstance(v, list) else v
+            out.append(text(SAFE_X, y, f"{label}: {short(v, chars - len(label) - 2)}", 18, "&HC0C0C0&", bold=False, border=1))
+            y += 26
+    out.append(text(SAFE_X, H - SAFE_Y - 6, f"archive.org/details/{esc(item['id'])}"[:70], 15, "&H808080&", bold=False, border=0))
+    out.append(text(W - SAFE_X, H - SAFE_Y - 6, "any key closes", 15, "&H808080&", an=9, border=0))
+    return "\n".join(out)
+
+
+# ---- settings menu ----
+def menu_screen(entries, sel):
+    """entries: [(label, value)]. A centred box over the picture; the selected row has < > around its value."""
+    rh, bw = 40, min(W - 2 * SAFE_X, 560)
+    bh = 64 + rh * len(entries) + 40
+    x0, y0 = (W - bw) // 2, max(SAFE_Y, (H - bh) // 2)
+    out = [rect(x0, y0, x0 + bw, y0 + bh, "&H180C04&", alpha="14"),
+           rect(x0, y0, x0 + bw, y0 + 4, "&H40D0FF&"),
+           text(x0 + 22, y0 + 16, "SETTINGS", 28, "&H40D0FF&")]
+    for i, (label, value) in enumerate(entries):
+        y = y0 + 64 + i * rh
+        if i == sel:
+            out.append(rect(x0 + 10, y, x0 + bw - 10, y + rh - 4, "&H703818&", alpha="40"))
+        out.append(text(x0 + 24, y + 8, esc(label), 21, border=1))
+        v = esc(value)
+        out.append(text(x0 + bw - 24, y + 8, f"<  {v}  >" if i == sel else v, 21, "&H40D0FF&" if i == sel else "&HD0D0D0&",
+                        an=9, border=1))
+    out.append(text(x0 + bw // 2, y0 + bh - 30, "UP/DOWN pick   LEFT/RIGHT change   S close", 15, "&H909090&", an=8, bold=False, border=0))
+    return "\n".join(out)
+
+
+# ---- goodnight (sleep timer) ----
+def goodnight_card():
+    return "\n".join([rect(0, 0, W, H, "&H000000&"),
+                      text(W // 2, H // 2 - 30, "GOODNIGHT", 52, "&HA0A0A0&", an=5, border=0),
+                      text(W // 2, H // 2 + 36, "sleep timer  -  press any key to wake up", 20, "&H606060&", an=5, bold=False, border=0)])
+
+
+# ---- boot splash: the pixel TV from the app icon ----
+def _hex(r, g, b):
+    return f"&H{b:02X}{g:02X}{r:02X}&"
+
+
+_TV_COL = {"w": _hex(255, 111, 0), "d": _hex(178, 70, 0), "s": _hex(0, 200, 83), "S": _hex(105, 240, 174),
+           "k": _hex(8, 40, 24), "g": _hex(200, 205, 220), "b": _hex(40, 40, 48)}
+
+
+def _tv_grid():
+    n = 32
+    g = [["_"] * n for _ in range(n)]
+
+    def box(x0, y0, x1, y1, c):
+        for yy in range(y0, y1):
+            for xx in range(x0, x1):
+                g[yy][xx] = c
+    for i in range(7):
+        g[9 - i][16 - i - 1] = "g"
+        g[9 - i][16 + i] = "g"
+    box(4, 10, 28, 26, "w")
+    box(4, 24, 28, 26, "d")
+    box(6, 12, 22, 24, "k")
+    box(7, 13, 21, 23, "s")
+    for yy in range(13, 23, 2):
+        box(7, yy, 21, yy + 1, "S")
+    box(23, 13, 26, 16, "b")
+    box(23, 18, 26, 21, "b")
+    box(7, 26, 10, 28, "b")
+    box(22, 26, 25, 28, "b")
+    return g
+
+
+def splash(status=()):
+    px = 6
+    x0, y0 = (W - 32 * px) // 2, int(H * 0.14)
+    out = [rect(0, 0, W, H, "&H180C04&")]
+    for yy, row in enumerate(_tv_grid()):
+        xx = 0
+        while xx < 32:
+            c = row[xx]
+            if c == "_":
+                xx += 1
+                continue
+            run = xx
+            while run < 32 and row[run] == c:
+                run += 1
+            out.append(rect(x0 + xx * px, y0 + yy * px, x0 + run * px, y0 + (yy + 1) * px, _TV_COL[c]))
+            xx = run
+    ty = y0 + 32 * px + 26
+    out.append(text(W // 2, ty, "SPELUNKR TV", 46, an=8))
+    out.append(text(W // 2, ty + 62, "cable tv, but weirder", 20, "&HA0A0A0&", an=8, bold=False, border=1))
+    for i, line in enumerate(status):
+        out.append(text(W // 2, ty + 110 + i * 28, esc(line), 20, "&H40D0FF&", an=8, border=1))
+    return "\n".join(out)

@@ -26,7 +26,8 @@ import subs as subsmod
 from mpvctl import Mpv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_PANEL = 1, 2, 3, 4, 5, 6, 7
+OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_PANEL, OVL_MENU = 1, 2, 3, 4, 5, 6, 7, 8
+SLEEP_STEPS = [0, 15, 30, 60, 90, 120]       # minutes
 
 
 def load_config(path, profile=None):
@@ -99,6 +100,15 @@ class Source:
         chs = [c for c in self.lineup["channels"]
                if not c.get("debugOnly") and not c.get("comingSoon") and c.get("dial") is not None]
         return sorted(chs, key=lambda c: c["dial"])
+
+    def details(self, channel_id, version, index):
+        """The site's description entry for one show, or None."""
+        ch = next(c for c in self.lineup["channels"] if c["id"] == channel_id)
+        v = next((v for v in ch["versions"] if v["v"] == version), None)
+        if not v or not v.get("details"):
+            return None
+        items = S.fetch(v["details"], self.cache)[0].get("items") or []
+        return items[index] if isinstance(index, int) and 0 <= index < len(items) else None
 
     def timeline(self, channel_id, t0, t1):
         """Shows for the guide. Uses its own small cache so the playing channel's bundle is not evicted."""
@@ -176,6 +186,10 @@ class TV:
         self.gain = 0              # what mpv currently has
         self.want_gain = 0         # what the current entry wants (ads are turned down by their gainDb)
         self.web_url = None
+        self.menu = None                          # {"sel": n} while the settings menu is open
+        self.panel_payload = None
+        self.sleep_at, self.sleep_warned, self.asleep = None, False, False
+        self.tune_after = 0                       # boot splash: tune once this time has passed
         self.sys_cache = (0, "")
 
     # ---- lifecycle ----
@@ -196,7 +210,11 @@ class TV:
         kb.start(lambda c: self.q.put(("cmd", c)))
         for extra in self.extra_inputs:
             extra.start(lambda c: self.q.put(("cmd", c)))
-        self.tune(self.idx)
+        secs = self.cfg.get("splash_seconds", 2.5)
+        if secs > 0 and not os.environ.get("TV_NO_SPLASH"):
+            self.splash(secs)
+        else:
+            self.tune(self.idx)
         shot = os.environ.get("TV_DEBUG_SHOT")      # "path:seconds[,path:seconds...]" for screenshots while developing
         if shot:
             threading.Thread(target=self._debug_shots, args=(shot,), daemon=True).start()
@@ -275,6 +293,8 @@ class TV:
             self.on_bundle(*val)
         elif kind == "subs":
             self.on_subs(*val)
+        elif kind == "details":
+            self.on_details(*val)
         else:
             self.command(val)
 
@@ -290,18 +310,33 @@ class TV:
                 return
             self.wheel_at = now
             c = "up" if c == "wheel_up" else "down"
-        if c == "click":
-            c = "info" if self.guide is None else "guide"
-        if c == "back":                              # TV remote "exit": closes the guide, otherwise nothing
-            if self.guide is not None:
-                self.close_guide()
+        if self.tune_after and c != "quit":          # boot splash: ignore keys until we are tuned
             return
-        if c == "enter" and not self.digits and self.guide is None:
+        if self.asleep:                              # any key (or the web remote) wakes the box
+            self.wake()
+            return
+        if self.sleep_at and self.sleep_warned and c != "sleep":
+            self.set_sleep(0, "SLEEP TIMER CANCELLED")   # a key press in the last minute means "still watching"
+            return
+        if c == "click":
+            c = "bar" if (self.guide is None and self.menu is None and self.panel is None) else "back"
+        if c == "back":                              # TV remote "exit": closes whatever is open
+            if self.menu is not None:
+                self.close_menu()
+            elif self.guide is not None:
+                self.close_guide()
+            elif self.panel is not None:
+                self.close_panel()
+            return
+        if c == "enter" and not self.digits and self.guide is None and self.menu is None:
             c = "info"                               # OK / Select with nothing else going on shows the info bar
         if c in ("volup", "voldown", "mute"):
             self.adjust_volume(c)
             return
-        if self.panel is not None:                   # help / test card: any other key just closes it
+        if self.menu is not None:
+            self.menu_command(c)
+            return
+        if self.panel is not None:                   # help / test card / details: any other key just closes it
             self.close_panel()
             return
         if c == "diag":
@@ -312,6 +347,33 @@ class TV:
             return
         if c == "captions":
             self.toggle_captions()
+            return
+        if c == "details":
+            self.open_details()
+            return
+        if c == "menu":
+            self.open_menu()
+            return
+        if c == "sleep":
+            self.step_sleep(1)
+            return
+        if c.startswith("sleep:"):                   # exact minutes (web API, automation): sleep:45, sleep:0 = off
+            try:
+                self.set_sleep(max(0.0, min(480.0, float(c[6:]))))
+            except ValueError:
+                pass
+            return
+        if c == "bar":
+            self.show_bar()
+            return
+        if c == "now" and self.guide is None:
+            self.open_guide("now")
+            return
+        if c == "info" and self.guide is None:       # first press shows the bar, a second one while it is up shows details
+            if time.time() < self.bar_until and self.cur and self.cur["entry"]["type"] == "video":
+                self.open_details()
+            else:
+                self.show_bar()
             return
         if c.startswith("channel:"):
             self.tune_to(c[8:])
@@ -407,7 +469,8 @@ class TV:
         ch = self.chan
         snap = {"channel": {"dial": ch["dial"], "id": ch["id"], "name": ch["name"], "color": ch.get("color")},
                 "time_ms": self.src.now_ms(), "volume": self.volume, "muted": self.muted,
-                "guide_open": self.guide is not None, "captions": self.captions, "last_load_s": self.last_load, "error": self.error or None,
+                "guide_open": self.guide is not None, "asleep": self.asleep,
+                "sleep_in_s": round(self.sleep_at - time.time()) if self.sleep_at else None, "captions": self.captions, "last_load_s": self.last_load, "error": self.error or None,
                 "loading": self.loading["stage"] if self.loading else None, "state": "tuning"}
         r = self.cur
         if r and self.bundle:
@@ -540,6 +603,24 @@ class TV:
     # ---- main tick ----
     def tick(self):
         now = time.time()
+        if self.tune_after:                          # boot splash
+            if now < self.tune_after:
+                return
+            self.tune_after = 0
+            self.mpv.overlay(OVL_PANEL, "")
+            self.tune(self.idx)
+            return
+        if self.asleep:
+            self.maybe_snapshot(now)
+            return
+        if self.sleep_at:
+            left = self.sleep_at - now
+            if left <= 0:
+                self.go_to_sleep()
+                return
+            if left <= 60 and not self.sleep_warned:
+                self.sleep_warned = True
+                self.toast(osd.toast_text("SLEEPING IN 1 MINUTE - PRESS A KEY TO STAY"), 10)
         if self.digits and now - self.digits_at > self.cfg["digit_timeout_s"]:
             self.commit_digits()
         self.maybe_refresh_lineup()
@@ -549,7 +630,7 @@ class TV:
         self.maybe_snapshot(now)
         self.update_diag(now)
         self.update_panel(now)
-        if self.guide is None and self.panel is None:
+        if self.guide is None and self.panel is None and self.menu is None:
             self.draw_loading()
         if self.retry_at and now < self.retry_at:
             return
@@ -581,7 +662,7 @@ class TV:
         self.cur = r
         if self.guide is not None:
             self.refresh_guide_clock()
-        elif self.panel is None:
+        elif self.panel is None and self.menu is None:
             self.update_screen(r, t)
             self.update_bar(r, t)
         self.maybe_prefetch(r)
@@ -658,14 +739,16 @@ class TV:
         sec = int(now)
         if sec != self.bar_second:
             self.bar_second = sec
-            self.mpv.overlay(OVL_BAR, osd.info_bar(self.chan, r, self.upcoming(r), t))
+            self.mpv.overlay(OVL_BAR, osd.info_bar(self.chan, r, self.upcoming(r), t,
+                                                   sleep_s=(self.sleep_at - now) if self.sleep_at else None))
 
     # ---- guide ----
-    def open_guide(self):
+    def open_guide(self, mode="grid"):
         if self.panel is not None:
             self.close_panel()
         t = self.src.now_ms()
-        self.guide = {"sel": self.idx, "off_ms": 0, "rows": {}, "t0": t, "asked": set(), "minute": t // 60000}
+        self.guide = {"sel": self.idx, "off_ms": 0, "rows": {}, "t0": t, "asked": set(), "minute": t // 60000,
+                      "mode": mode}               # "grid" = the Prevue-style guide, "now" = list of what is on now
         self.mpv.overlay(OVL_BAR, "")
         self.mpv.overlay(OVL_SCREEN, "")
         self.screen_key = None
@@ -686,8 +769,17 @@ class TV:
 
     def guide_command(self, c):
         g, n = self.guide, len(self.chans)
-        if c in ("guide", "quit", "info"):
+        if c == "now":
+            if g["mode"] == "now":
+                self.close_guide()
+            else:
+                g["mode"] = "now"
+        elif c == "guide" and g["mode"] == "now":
+            g["mode"] = "grid"
+        elif c in ("guide", "quit", "info"):
             self.close_guide()
+        elif c in ("left", "right") and g["mode"] == "now":
+            return True
         elif c == "up":
             g["sel"] = (g["sel"] - 1) % n
         elif c == "down":
@@ -708,9 +800,12 @@ class TV:
         self.draw_guide()
         return True
 
+    def _page(self):
+        return osd.NOW_ROWS if self.guide["mode"] == "now" else osd.GUIDE_ROWS
+
     def _window(self):
-        g = self.guide
-        first = max(0, min(g["sel"] - osd.GUIDE_ROWS // 2, len(self.chans) - osd.GUIDE_ROWS))
+        g, per = self.guide, self._page()
+        first = max(0, min(g["sel"] - per // 2, len(self.chans) - per))
         return first, self.src.now_ms() + g["off_ms"]
 
     def draw_guide(self):
@@ -720,12 +815,15 @@ class TV:
         first, t0 = self._window()
         g["t0"] = t0
         rows = []
-        for ch in self.chans[first:first + osd.GUIDE_ROWS]:
+        for ch in self.chans[first:first + self._page()]:
             rows.append({"chan": ch, "programs": g["rows"].get(ch["id"])})
             if ch["id"] not in g["asked"]:
                 g["asked"].add(ch["id"])
                 self.guide_jobs.put((ch["id"], t0, g["off_ms"]))
-        self.mpv.overlay(OVL_GUIDE, osd.guide(rows, g["sel"], first, t0, self.src.now_ms()))
+        if g["mode"] == "now":
+            self.mpv.overlay(OVL_GUIDE, osd.now_list(rows, g["sel"], first, self.src.now_ms()))
+        else:
+            self.mpv.overlay(OVL_GUIDE, osd.guide(rows, g["sel"], first, t0, self.src.now_ms()))
 
     def refresh_guide_clock(self):
         g = self.guide
@@ -752,10 +850,10 @@ class TV:
     def standby_ass(self, reason=""):
         return osd.stand_by(reason, self.cfg.get("test_card", True))
 
-    def open_panel(self, kind):
+    def open_panel(self, kind, payload=None):
         if self.guide is not None:
             self.close_guide()
-        self.panel, self.panel_at = kind, 0
+        self.panel, self.panel_at, self.panel_payload = kind, 0, payload
         self.mpv.overlay(OVL_BAR, "")
         self.mpv.overlay(OVL_SCREEN, "")
         self.screen_key = None
@@ -771,7 +869,9 @@ class TV:
         if self.panel is None or now - self.panel_at < (2 if self.panel == "help" else 3600):
             return
         self.panel_at = now
-        if self.panel == "testcard":
+        if self.panel == "details":
+            ass = osd.details_screen(self.chan, *self.panel_payload)
+        elif self.panel == "testcard":
             ass = osd.test_card("SPELUNKR TV", f"CH {self.chan['dial']}  {self.chan['name']}")
         else:
             ass = osd.help_screen(self.help_lines())
@@ -788,6 +888,144 @@ class TV:
                  f"channels {len(self.chans)}    lineup {str(self.src.lineup.get('generatedAt', '?'))[:16]}",
                  f"captions {'on' if self.captions else 'off'}    cec {'on' if self.cfg.get('cec', {}).get('enabled') else 'off'}"]
         return lines
+
+    # ---- show details ----
+    def open_details(self):
+        r = self.cur
+        if not r or r["entry"]["type"] != "video" or not self.bundle:
+            self.toast(osd.toast_text("NO SHOW TO DESCRIBE RIGHT NOW"))
+            return
+        entry, key, cid, ver = r["entry"], self.key, self.chan["id"], r["version"]
+
+        def work():
+            try:
+                det = self.src.details(cid, ver, entry.get("videoIndex"))
+            except Exception:
+                det = None                      # the screen still shows title, year and runtime
+            self.q.put(("details", (key, entry["item"], det, entry["durMs"] / 1000)))
+        threading.Thread(target=work, daemon=True, name="details").start()
+
+    def on_details(self, key, item, det, runtime):
+        if key != self.key or self.guide is not None or self.menu is not None or self.asleep:
+            return
+        self.open_panel("details", (item, det, runtime))
+
+    # ---- settings menu ----
+    def menu_entries(self):
+        def onoff(b):
+            return "on" if b else "off"
+
+        def cycle(options, cur, d):
+            i = options.index(cur) if cur in options else 0
+            return options[(i + d) % len(options)]
+
+        mono = bool(self.cfg["prof"].get("mono"))
+        mins = self.sleep_minutes()
+        return [
+            ("Volume", "muted" if self.muted else f"{self.volume}%",
+             lambda d: self.adjust_volume("volup" if d > 0 else "voldown")),
+            ("Captions", onoff(self.captions), lambda d: self.toggle_captions()),
+            ("Info bar stays", f"{self.cfg['bar_seconds']} s",
+             lambda d: self.set_setting("bar_seconds", cycle([3, 6, 10], self.cfg["bar_seconds"], d))),
+            ("Static between channels", onoff(self.cfg["noise"] == "lavfi"),
+             lambda d: self.set_setting("noise", "none" if self.cfg["noise"] == "lavfi" else "lavfi")),
+            ("Station-break slides", onoff(self.cfg["bumps"]), lambda d: self.set_setting("bumps", not self.cfg["bumps"])),
+            ("Black & white", onoff(mono), lambda d: self.set_mono(not mono)),
+            ("Sleep timer", f"{mins} min" if mins else "off", lambda d: self.step_sleep(d)),
+        ]
+
+    def open_menu(self):
+        if self.guide is not None:
+            self.close_guide()
+        if self.panel is not None:
+            self.close_panel()
+        self.menu = {"sel": 0}
+        self.mpv.overlay(OVL_BAR, "")
+        self.mpv.overlay(OVL_SCREEN, "")
+        self.screen_key = None
+        self.draw_menu()
+
+    def close_menu(self):
+        self.menu = None
+        self.mpv.overlay(OVL_MENU, "")
+        self.screen_key, self.bar_second, self.load_tick = None, None, None
+        self.draw_loading(force=True)
+
+    def draw_menu(self):
+        if self.menu is None:
+            return
+        entries = self.menu_entries()
+        self.mpv.overlay(OVL_MENU, osd.menu_screen([(lbl, val) for lbl, val, _ in entries], self.menu["sel"]))
+
+    def menu_command(self, c):
+        entries = self.menu_entries()
+        if c in ("menu", "quit", "info", "guide", "bar", "now"):
+            self.close_menu()
+            return
+        if c in ("up", "down"):
+            self.menu["sel"] = (self.menu["sel"] + (1 if c == "down" else -1)) % len(entries)
+        elif c in ("left", "right", "enter"):
+            entries[self.menu["sel"]][2](-1 if c == "left" else 1)
+        self.draw_menu()
+
+    def set_setting(self, key, value):
+        self.cfg[key] = value
+        saved = self.store.load().get("settings", {})
+        saved[key] = value
+        self.store.save(settings=saved)
+
+    def set_mono(self, on):
+        self.cfg["prof"]["mono"] = on
+        self.mpv.mono = on
+        self.mpv.command("set_property", "saturation", -100 if on else 0)
+        self.set_setting("mono", on)
+        self.screen_key, self.bar_second, self.load_tick = None, None, None      # redraw everything in the new colours
+        if self.guide is not None:
+            self.draw_guide()
+
+    # ---- sleep timer ----
+    def sleep_minutes(self):
+        return max(1, round((self.sleep_at - time.time()) / 60)) if self.sleep_at else 0
+
+    def step_sleep(self, d):
+        cur = self.sleep_minutes()
+        i = min(range(len(SLEEP_STEPS)), key=lambda k: abs(SLEEP_STEPS[k] - cur)) if cur else 0
+        self.set_sleep(SLEEP_STEPS[(i + d) % len(SLEEP_STEPS)])
+
+    def set_sleep(self, minutes, note=None):
+        self.sleep_at = time.time() + minutes * 60 if minutes else None
+        self.sleep_warned = False
+        self.toast(osd.toast_text(note or (f"SLEEP TIMER: {minutes} MIN" if minutes else "SLEEP TIMER OFF")))
+        if self.menu is not None:
+            self.draw_menu()
+
+    def go_to_sleep(self):
+        self.asleep, self.sleep_at, self.sleep_warned = True, None, False
+        self.guide, self.menu, self.panel = None, None, None
+        self.loading, self.expect_url, self.digits = None, None, ""
+        for ov in (OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_MENU):
+            self.mpv.overlay(ov, "")
+        self.play_black(12 * 3600)                    # stops streaming from archive.org
+        self.mpv.overlay(OVL_PANEL, osd.goodnight_card())
+        for extra in self.extra_inputs:
+            if hasattr(extra, "standby"):
+                extra.standby()                       # HDMI-CEC: put the TV to sleep too
+        if self.cfg.get("sleep_action", "blank") == "quit":
+            self.running = False
+
+    def wake(self):
+        self.asleep = False
+        self.mpv.overlay(OVL_PANEL, "")
+        for extra in self.extra_inputs:
+            if hasattr(extra, "wake"):
+                extra.wake()
+        self.tune(self.idx)
+
+    # ---- boot splash ----
+    def splash(self, secs):
+        self.play_black(secs + 10)
+        self.mpv.overlay(OVL_PANEL, osd.splash(["TUNING IN..."]))
+        self.tune_after = time.time() + secs
 
     # ---- diagnostics box ----
     def toggle_diag(self):
@@ -992,6 +1230,12 @@ def create(argv=None):
     ap.add_argument("--mpv-arg", action="append", default=[], metavar="ARG", help="extra mpv option, repeatable")
     a = ap.parse_args(argv)
     cfg = load_config(a.config, a.profile)
+    saved_settings = Store(cfg["cache_dir"]).load().get("settings", {}) if cfg.get("remember", True) else {}
+    for key in ("bar_seconds", "noise", "bumps"):         # things changed in the settings menu stay changed
+        if key in saved_settings:
+            cfg[key] = saved_settings[key]
+    if "mono" in saved_settings and not a.mono:
+        cfg["prof"]["mono"] = saved_settings["mono"]
     if a.mono:
         cfg["prof"]["mono"] = True
     if cfg["prof"].get("mono") and not any(x.startswith("--saturation") for x in cfg["prof"]["mpv"] + a.mpv_arg):

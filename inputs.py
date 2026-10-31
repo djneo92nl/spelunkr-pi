@@ -1,7 +1,7 @@
 """Input sources. Each source pushes command strings onto a queue; the TV loop never cares where they came from.
 
 Commands: up, down, left, right, last, info, guide, fullscreen, mute, volup, voldown, wheel_up, wheel_down,
-          click, channel:<dial|id>, diag, help, captions, testcard, back, quit, enter, digit:<0-9>
+          click, channel:<dial|id>, diag, help, captions, testcard, now, details, menu, sleep, bar, back, quit, enter, digit:<0-9>
 
 To add GPIO buttons or a USB remote later, write another class with start(put) / stop() and add it in tv.py:
 
@@ -21,13 +21,14 @@ import threading
 # mpv key name -> command. Used for keys pressed in mpv's own window.
 KEY_BINDINGS = {"UP": "up", "DOWN": "down", "PGUP": "up", "PGDWN": "down", "+": "up", "-": "down",
                 "LEFT": "left", "RIGHT": "right", "ENTER": "enter", "i": "info", "g": "guide", "l": "last", "q": "quit", "f": "fullscreen", "MBTN_LEFT_DBL": "fullscreen", "MBTN_LEFT": "click",
-                "m": "mute", "[": "voldown", "]": "volup", "d": "diag", "?": "help", "h": "help", "c": "captions", "t": "testcard", "WHEEL_UP": "wheel_up", "WHEEL_DOWN": "wheel_down",
+                "m": "mute", "[": "voldown", "]": "volup", "d": "diag", "?": "help", "h": "help", "c": "captions", "t": "testcard",
+                "n": "now", "s": "menu", "z": "sleep", "WHEEL_UP": "wheel_up", "WHEEL_DOWN": "wheel_down",
                 "NEXT": "up", "PREV": "down", "PLAYPAUSE": "mute",
                 **{str(d): f"digit:{d}" for d in range(10)}}
 
 _CHAR_KEYS = {"+": "up", "=": "up", "-": "down", "_": "down", "k": "up", "j": "down", "i": "info",
               "g": "guide", "l": "last", "q": "quit", "f": "fullscreen", "m": "mute", "[": "voldown", "]": "volup", "d": "diag", "?": "help", "h": "help", "c": "captions",
-              "t": "testcard", "\r": "enter", "\n": "enter",
+              "t": "testcard", "n": "now", "s": "menu", "z": "sleep", "\r": "enter", "\n": "enter",
               **{str(d): f"digit:{d}" for d in range(10)}}
 _ESC_KEYS = {"[A": "up", "[B": "down", "[C": "right", "[D": "left", "OC": "right", "OD": "left", "[5~": "up", "[6~": "down", "OA": "up", "OB": "down"}
 
@@ -86,7 +87,7 @@ CEC_KEYS = {
     0x30: "up", 0x31: "down", 0x32: "last",                     # channel up / down, previous channel
     0x37: "up", 0x38: "down",                                   # page up / down
     0x35: "info", 0x53: "guide",                                # display information, EPG
-    0x09: "guide", 0x0B: "guide",                               # root menu, contents menu
+    0x09: "guide", 0x0B: "now", 0x0A: "menu", 0x51: "captions",   # root menu, contents menu, setup menu, subtitle
     0x41: "volup", 0x42: "voldown", 0x43: "mute",               # volume (usually handled by the TV itself)
     0x72: "last", 0x73: "guide", 0x74: "info", 0x71: "mute",    # red, green, yellow, blue
     **{0x20 + d: f"digit:{d}" for d in range(10)},              # 0-9
@@ -149,6 +150,21 @@ class CecInput:
                     put(cmd)
             if self._stop.wait(10):                              # cec-client ended (adapter busy / unplugged): retry
                 return
+
+    def _tell(self, text):
+        try:
+            if self._proc and self._proc.poll() is None:
+                self._proc.stdin.write(text)
+                self._proc.stdin.flush()
+        except OSError:
+            pass
+
+    def standby(self):
+        """Sleep timer ran out: put the TV into standby."""
+        self._tell("standby 0\n")
+
+    def wake(self):
+        self._tell("on 0\nas\n")
 
     def stop(self):
         self._stop.set()

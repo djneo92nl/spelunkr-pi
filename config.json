@@ -219,5 +219,7 @@
     "wake_tv": true
   },
   "prefetch_s": 60,
-  "test_card": true
+  "test_card": true,
+  "splash_seconds": 2.5,
+  "sleep_action": "blank"
 }
