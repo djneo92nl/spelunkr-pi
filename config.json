@@ -1,0 +1,113 @@
+{
+  "profile": "mac",
+  "cache_dir": "~/.cache/spelunkr",
+  "lineup_refresh_s": 600,
+  "start_channel": 13,
+  "drift_s": 4,
+  "drift_check_s": 20,
+  "bar_seconds": 6,
+  "bumps": true,
+  "noise": "lavfi",
+  "noise_seconds": 1.2,
+  "digit_timeout_s": 1.5,
+  "retry_backoff_s": [
+    2,
+    5,
+    10,
+    20
+  ],
+  "profiles": {
+    "mac": {
+      "mpv": [
+        "mpv",
+        "--idle=yes",
+        "--force-window=yes",
+        "--no-terminal",
+        "--no-config",
+        "--osc=no",
+        "--input-ipc-server={sock}",
+        "--input-conf={inputconf}",
+        "--no-input-default-bindings",
+        "--title=${force-media-title}",
+        "--geometry=720x540",
+        "--keep-open=no",
+        "--audio-display=no",
+        "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
+        "--network-timeout=30",
+        "--cache=yes",
+        "--demuxer-max-bytes=64MiB",
+        "--ytdl=no"
+      ],
+      "noise_graph": "av://lavfi:nullsrc=s=192x144:r=15,geq=random(1)*255:128:128",
+      "black_graph": "av://lavfi:color=c=black:s=320x240:r=5"
+    },
+    "pi": {
+      "_note": "UNTESTED starting point. Run pi/probe.sh on the Pi 1B to find the hwdec/vo that works, then edit this.",
+      "mpv": [
+        "mpv",
+        "--idle=yes",
+        "--force-window=yes",
+        "--no-terminal",
+        "--no-config",
+        "--osc=no",
+        "--input-ipc-server={sock}",
+        "--input-conf={inputconf}",
+        "--no-input-default-bindings",
+        "--vo=drm",
+        "--hwdec=v4l2m2m-copy",
+        "--framedrop=vo",
+        "--vd-lavc-threads=1",
+        "--keep-open=no",
+        "--audio-display=no",
+        "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
+        "--network-timeout=30",
+        "--cache=yes",
+        "--demuxer-max-bytes=16MiB",
+        "--demuxer-readahead-secs=20",
+        "--ytdl=no"
+      ],
+      "noise_graph": "av://lavfi:nullsrc=s=96x72:r=12,geq=random(1)*255:128:128",
+      "black_graph": "av://lavfi:color=c=black:s=160x120:r=5"
+    },
+    "hdmi": {
+      "_note": "UNTESTED. Pi on HDMI (no composite lines in config.txt). Same decoder flags as 'pi'; pick the HDMI sound card with: aplay -l  (e.g. --audio-device=alsa/plughw:CARD=vc4hdmi,DEV=0). mpv --vo=drm is fullscreen by itself.",
+      "mpv": [
+        "mpv",
+        "--idle=yes",
+        "--force-window=yes",
+        "--no-terminal",
+        "--no-config",
+        "--osc=no",
+        "--input-ipc-server={sock}",
+        "--input-conf={inputconf}",
+        "--no-input-default-bindings",
+        "--vo=drm",
+        "--hwdec=v4l2m2m-copy",
+        "--framedrop=vo",
+        "--vd-lavc-threads=1",
+        "--keep-open=no",
+        "--audio-display=no",
+        "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
+        "--network-timeout=30",
+        "--cache=yes",
+        "--demuxer-max-bytes=16MiB",
+        "--demuxer-readahead-secs=20",
+        "--ytdl=no"
+      ],
+      "noise_graph": "av://lavfi:nullsrc=s=160x90:r=12,geq=random(1)*255:128:128",
+      "black_graph": "av://lavfi:color=c=black:s=160x90:r=5"
+    }
+  },
+  "remember": true,
+  "web": {
+    "enabled": false,
+    "host": "0.0.0.0",
+    "port": 8080,
+    "token": ""
+  },
+  "cec": {
+    "enabled": false,
+    "name": "Spelunkr TV",
+    "wake_tv": true
+  }
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=spelunkr.tv client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pi
+Group=pi
+SupplementaryGroups=video audio input render tty
+WorkingDirectory=/opt/spelunkr-tv
+ExecStart=/usr/bin/python3 /opt/spelunkr-tv/tv.py --profile pi
+# Run on the console so a USB keyboard on the Pi controls it (arrows / digits / Enter / i / q)
+StandardInput=tty-force
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
