@@ -22,6 +22,8 @@ ls -l /dev/dri 2>&1
 echo "drm connectors:"; ls /sys/class/drm 2>&1
 echo "--- $CFG (active lines)"; grep -v '^#' "$CFG" | grep -v '^$'
 echo "--- $CMD"; cat "$CMD"
+echo "--- what the firmware said about config.txt overlays (errors here explain a missing display)"
+( sudo vclog -m 2>/dev/null || sudo vcdbg log msg 2>/dev/null ) | grep -i -E 'dterror|overlay' | head -8
 echo "--- kernel messages about the display"
 (dmesg 2>/dev/null || sudo dmesg 2>/dev/null) | grep -i -E 'vc4|drm|v3d|fb0|composite' | tail -15
 
@@ -57,5 +59,6 @@ if [ -e /dev/dri/card0 ] || ls /dev/dri/card* >/dev/null 2>&1; then
   echo "then edit profiles.pi.mpv in config.json."
 else
   echo "There is NO DRM device (/dev/dri is empty), so mpv has no way to show video: the KMS display driver is not active."
+  echo "If the firmware lines above say \"needs at least 512MB\": this board has too little memory for the KMS overlay; use a 512MB/1GB Pi."
   echo "Fix: enable it in $CFG (dtoverlay=vc4-kms-v3d,composite) and reboot; see INSTALL-PI.md step 6. Then run this again."
 fi

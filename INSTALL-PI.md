@@ -8,7 +8,18 @@ From a blank SD card to a TV channel on your goggles. Takes about 30 minutes plu
 ## Which Pi
 
 Written for a **Pi 1 Model B** (the weakest target), but it works for a **Pi 2** or **Pi 3** too, and those are the easier boards: more CPU and
-1 GB of RAM, so the performance worries below mostly disappear. Differences to know about:
+1 GB of RAM, so the performance worries below mostly disappear.
+
+**Memory matters more than the CPU:**
+
+* **A 256 MB Pi 1 (Model B Rev 1, `grep Revision /proc/cpuinfo` shows `0002`/`0003`/`0004`-`0006`) is not usable with this software.**
+  The firmware refuses to apply the KMS display overlay on boards with less than 512 MB (`dterror: Overlay 'vc4-kms-v3d' needs at least 512MB`
+  in `sudo vclog -m`), so there is no `/dev/dri` and mpv cannot show video. Loading the overlay by hand after boot works, but with ~170 MB usable
+  everything swaps to the SD card (measured: building one schedule took 94 s, 20 s of decoding took 5 minutes).
+* **A 512 MB Pi 1 (Revision `000d`/`000e`/`000f`) is the smallest worthwhile board.** Not tested yet.
+* A Pi 2 / 3 (1 GB) is the comfortable choice.
+
+Differences to know about:
 
 * **Pi 2 / 3 composite uses the 4-pole 3.5 mm "AV" jack, not a yellow RCA socket.** You need a cable made for it, with the Raspberry Pi pin-out:
   tip = left audio, first ring = right audio, second ring = ground, **sleeve = video**. Many camcorder cables have video and ground swapped;
@@ -250,7 +261,7 @@ Note: `setup.sh` overwrites `/opt/spelunkr-tv/config.json`. Keep your Pi flags i
 | No picture at all | HDMI unplugged at boot? Check the `config.txt` lines (step 6). Check the cable goes into the yellow jack. |
 | Black and white or rolling picture | PAL not applied: `sdtv_mode=2`, or `video=Composite-1:720x576@50ie`. |
 | Picture cut off or shifted | `disable_overscan=1`. The goggles may need their own picture settings. |
-| `Failed to find a usable DRM primary node` / `/dev/dri` is empty | The KMS display driver is not active, so mpv has nothing to draw on. In `config.txt` use `dtoverlay=vc4-kms-v3d,composite` (step 6), reboot, run `sh pi/probe.sh` again. |
+| `Failed to find a usable DRM primary node` / `/dev/dri` is empty | The KMS display driver is not active, so mpv has nothing to draw on. Check `sudo vclog -m \| grep dterror`: "needs at least 512MB" means the board has too little memory (see "Which Pi"). Otherwise use `dtoverlay=vc4-kms-v3d,composite` in `config.txt` (step 6), reboot, and run `sh pi/probe.sh` again. |
 | `mpv` exits straight away | `journalctl -u spelunkr-tv -n 50`. Usually a wrong `--vo` or `--hwdec`: re-run `pi/probe.sh`. |
 | Stuttering video | Hardware decode not active (step 5). Set `"bumps": false` and `"noise": "none"`. Lower the cache: `--demuxer-max-bytes=8MiB`. |
 | Starts slowly (10+ seconds) | Normal on a cold archive.org file. The screen shows what it is waiting for. A wired network helps. |
