@@ -250,6 +250,7 @@ Note: `setup.sh` overwrites `/opt/spelunkr-tv/config.json`. Keep your Pi flags i
 | No picture at all | HDMI unplugged at boot? Check the `config.txt` lines (step 6). Check the cable goes into the yellow jack. |
 | Black and white or rolling picture | PAL not applied: `sdtv_mode=2`, or `video=Composite-1:720x576@50ie`. |
 | Picture cut off or shifted | `disable_overscan=1`. The goggles may need their own picture settings. |
+| `Failed to find a usable DRM primary node` / `/dev/dri` is empty | The KMS display driver is not active, so mpv has nothing to draw on. In `config.txt` use `dtoverlay=vc4-kms-v3d,composite` (step 6), reboot, run `sh pi/probe.sh` again. |
 | `mpv` exits straight away | `journalctl -u spelunkr-tv -n 50`. Usually a wrong `--vo` or `--hwdec`: re-run `pi/probe.sh`. |
 | Stuttering video | Hardware decode not active (step 5). Set `"bumps": false` and `"noise": "none"`. Lower the cache: `--demuxer-max-bytes=8MiB`. |
 | Starts slowly (10+ seconds) | Normal on a cold archive.org file. The screen shows what it is waiting for. A wired network helps. |
