@@ -46,7 +46,7 @@
       "black_graph": "av://lavfi:color=c=black:s=320x240:r=5"
     },
     "pi": {
-      "_note": "UNTESTED starting point. Run pi/probe.sh on the Pi 1B to find the hwdec/vo that works, then edit this.",
+      "_note": "Measured on a Pi 2: --vo=gpu --gpu-context=drm --profile=fast plays smoothly with hardware decode (v4l2m2m-copy); --vo=drm (CPU scaling) was too slow at HDMI resolutions. Not yet tested on composite or a Pi 1.",
       "mpv": [
         "mpv",
         "--idle=yes",
@@ -57,7 +57,9 @@
         "--input-ipc-server={sock}",
         "--input-conf={inputconf}",
         "--no-input-default-bindings",
-        "--vo=drm",
+        "--vo=gpu",
+        "--gpu-context=drm",
+        "--profile=fast",
         "--hwdec=v4l2m2m-copy",
         "--framedrop=vo",
         "--vd-lavc-threads=1",
@@ -78,7 +80,7 @@
       "black_graph": "av://lavfi:color=c=black:s=160x120:r=5"
     },
     "hdmi": {
-      "_note": "UNTESTED. Pi on HDMI (no composite lines in config.txt). Same decoder flags as 'pi'; pick the HDMI sound card with: aplay -l  (e.g. --audio-device=alsa/plughw:CARD=vc4hdmi,DEV=0). mpv --vo=drm is fullscreen by itself.",
+      "_note": "Measured on a Pi 2: --vo=gpu --gpu-context=drm --profile=fast plays smoothly with hardware decode (v4l2m2m-copy); --vo=drm (CPU scaling) was too slow at HDMI resolutions. Not yet tested on composite or a Pi 1.",
       "mpv": [
         "mpv",
         "--idle=yes",
@@ -89,7 +91,9 @@
         "--input-ipc-server={sock}",
         "--input-conf={inputconf}",
         "--no-input-default-bindings",
-        "--vo=drm",
+        "--vo=gpu",
+        "--gpu-context=drm",
+        "--profile=fast",
         "--hwdec=v4l2m2m-copy",
         "--framedrop=vo",
         "--vd-lavc-threads=1",
@@ -121,7 +125,9 @@
         "--input-ipc-server={sock}",
         "--input-conf={inputconf}",
         "--no-input-default-bindings",
-        "--vo=drm",
+        "--vo=gpu",
+        "--gpu-context=drm",
+        "--profile=fast",
         "--hwdec=v4l2m2m-copy",
         "--framedrop=vo",
         "--vd-lavc-threads=1",
@@ -184,7 +190,9 @@
         "--input-ipc-server={sock}",
         "--input-conf={inputconf}",
         "--no-input-default-bindings",
-        "--vo=drm",
+        "--vo=gpu",
+        "--gpu-context=drm",
+        "--profile=fast",
         "--hwdec=v4l2m2m-copy",
         "--framedrop=vo",
         "--vd-lavc-threads=1",
@@ -221,5 +229,6 @@
   "prefetch_s": 60,
   "test_card": true,
   "splash_seconds": 2.5,
-  "sleep_action": "blank"
+  "sleep_action": "blank",
+  "evdev": true
 }

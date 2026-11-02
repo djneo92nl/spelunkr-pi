@@ -221,7 +221,7 @@ sudo systemctl restart spelunkr-tv      # after editing config.json
 sudo systemctl disable --now spelunkr-tv
 ```
 
-The service runs on the console (`tty1`), so a USB keyboard plugged into the Pi controls it. It restarts itself if it crashes.
+A USB keyboard (or remote) plugged into the Pi controls it directly (read from `/dev/input`, so it works from SSH too), and so do keys typed in your SSH terminal. It restarts itself if it crashes.
 
 ### TV remote over HDMI-CEC (optional, HDMI only)
 
@@ -258,6 +258,7 @@ Note: `setup.sh` overwrites `/opt/spelunkr-tv/config.json`. Keep your Pi flags i
 
 | Problem | Try |
 |---|---|
+| Rainbow screen, then the green LED blinks a pattern and it never boots (e.g. 8 flashes) | Wrong image. Use **Raspberry Pi OS Lite (32-bit)**; a 64-bit image will not boot on a Pi 1 or a Pi 2 v1.1, and the LED code can look like a memory error. Next suspects: the card (flash again, or try another card) and a weak power supply. LED codes: 3 = `start.elf` missing, 4 = cannot launch it, 7 = kernel missing, 8 = memory not recognised. |
 | No picture at all | HDMI unplugged at boot? Check the `config.txt` lines (step 6). Check the cable goes into the yellow jack. |
 | Black and white or rolling picture | PAL not applied: `sdtv_mode=2`, or `video=Composite-1:720x576@50ie`. |
 | Picture cut off or shifted | `disable_overscan=1`. The goggles may need their own picture settings. |

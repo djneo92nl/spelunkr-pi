@@ -1286,6 +1286,8 @@ def create(argv=None):
             print(f"web remote: http://{shown}:{port}/" + (f"?token={token}" if token else ""), file=sys.stderr)
             if not token and host not in ("127.0.0.1", "localhost"):
                 print("  note: no token set; anyone on this network can use the remote", file=sys.stderr)
+    if cfg.get("evdev", True) and sys.platform.startswith("linux"):
+        tv.extra_inputs.append(inputs.EvdevInput())        # USB keyboard / remote plugged into the Pi itself
     cec = dict(cfg.get("cec", {}))
     if a.cec or cec.get("enabled"):
         tv.extra_inputs.append(inputs.CecInput(cec.get("name", "Spelunkr TV"), cec.get("wake_tv", True),

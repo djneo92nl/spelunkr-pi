@@ -35,6 +35,10 @@ Keys (terminal, or inside mpv's window):
 | `t` | test card |
 | `q` | quit (closes the guide first, if it is open) |
 
+On Linux (the Pi) a USB keyboard, remote or IR receiver plugged into the machine is read directly from `/dev/input`, so the keys work however the
+client was started (SSH, systemd, the desktop's terminal). The keyboard is grabbed while the client runs, so keys do not also type into the console.
+The user needs to be in the `input` group (the default `pi` user is); `"evdev": false` turns this off. Media keys (volume, mute, channel +/-, menu, info) work too.
+
 Start fullscreen with `python3 tv.py --fs`. Extra mpv options: `--mpv-arg=--geometry=1280x720` (repeatable).
 It remembers the last channel, volume and mute, and on the Mac the window size and fullscreen, between runs
 (`~/.cache/spelunkr/state.json`; set `"remember": false` in `config.json` to turn that off). The window title shows the channel and show.

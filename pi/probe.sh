@@ -7,6 +7,10 @@ URL="${1:-https://archive.org/download/education_2/education_2.mp4}"
 CFG=/boot/firmware/config.txt; [ -f "$CFG" ] || CFG=/boot/config.txt
 CMD=/boot/firmware/cmdline.txt; [ -f "$CMD" ] || CMD=/boot/cmdline.txt
 section() { echo; echo "== $1 =="; }
+if ! command -v mpv >/dev/null; then
+  echo "mpv is not installed yet: run  sudo sh pi/setup.sh  first, then run this again."
+  exit 1
+fi
 
 section "board"
 tr -d '\0' </proc/device-tree/model; echo
@@ -47,10 +51,12 @@ done
 
 section "real video output (needs a DRM device)"
 if [ -e /dev/dri/card0 ] || ls /dev/dri/card* >/dev/null 2>&1; then
-  for combo in "drm v4l2m2m-copy" "drm no" "gpu v4l2m2m-copy" "gpu no"; do
+  for combo in "gpu v4l2m2m-copy" "gpu no" "drm v4l2m2m-copy"; do
     set -- $combo
-    echo; echo "=== vo=$1 hwdec=$2 (15 s) ==="
-    mpv --no-config --vo="$1" --hwdec="$2" --length=15 --start=60 --no-audio \
+    extra=""
+    [ "$1" = "gpu" ] && extra="--gpu-context=drm --profile=fast"     # the GPU scales; vo=drm scales on the CPU (too slow at HDMI sizes)
+    echo; echo "=== vo=$1 hwdec=$2 $extra (15 s) ==="
+    mpv --no-config --vo="$1" $extra --hwdec="$2" --length=15 --start=60 --no-audio \
         --msg-level=all=warn,vd=v,vo=v,statusline=status \
         --term-status-msg='dropped=${decoder-frame-drop-count}/${frame-drop-count} fps=${estimated-vf-fps}' "$URL" 2>&1 \
       | grep -E "Using hardware|hwdec|Failed|Error|error|dropped=" | sort | uniq -c | sort -rn | head -8

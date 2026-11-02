@@ -170,3 +170,128 @@ class CecInput:
         self._stop.set()
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
+
+
+# ---- evdev: USB keyboards, remotes and IR receivers read straight from /dev/input (Linux) ----
+# Works whatever terminal the client was started from (SSH, systemd), which the terminal input cannot do.
+# The keyboard is grabbed while we run, so keys do not also type into the console (a login prompt on tty1).
+KEY = {1: "back", 16: "quit", 28: "enter", 96: "enter", 103: "up", 108: "down", 105: "left", 106: "right",
+       104: "up", 109: "down", 78: "up", 13: "up", 74: "down", 12: "down", 402: "up", 403: "down",
+       26: "voldown", 27: "volup", 114: "voldown", 115: "volup", 113: "mute", 50: "mute",
+       34: "guide", 23: "info", 358: "info", 365: "guide", 49: "now", 31: "menu", 139: "menu", 44: "sleep",
+       46: "captions", 32: "diag", 20: "testcard", 38: "last", 35: "help", 53: "help", 33: "fullscreen",
+       2: "digit:1", 3: "digit:2", 4: "digit:3", 5: "digit:4", 6: "digit:5", 7: "digit:6", 8: "digit:7",
+       9: "digit:8", 10: "digit:9", 11: "digit:0",
+       79: "digit:1", 80: "digit:2", 81: "digit:3", 75: "digit:4", 76: "digit:5", 77: "digit:6",
+       71: "digit:7", 72: "digit:8", 73: "digit:9", 82: "digit:0"}
+_AUTOREPEAT_OK = {"volup", "voldown"}          # a held volume key keeps going; other keys act once per press
+
+
+def find_keyboards(devices_text):
+    """/dev/input/event numbers of everything that looks like a keyboard or key-sending remote, from /proc/bus/input/devices."""
+    import re
+    found = []
+    for block in devices_text.split("\n\n"):
+        m = re.search(r"Handlers=(.*)", block)
+        if not m or "kbd" not in m.group(1):
+            continue
+        ev = re.search(r"event(\d+)", m.group(1))
+        if ev:
+            found.append(int(ev.group(1)))
+    return found
+
+
+def parse_events(buf, fmt="@llHHi"):
+    """[(code, value)] for the key events (type 1) in a chunk read from an event device."""
+    import struct
+    size = struct.calcsize(fmt)
+    out = []
+    for i in range(0, len(buf) - size + 1, size):
+        _s, _us, etype, code, value = struct.unpack_from(fmt, buf, i)
+        if etype == 1:
+            out.append((code, value))
+    return out
+
+
+class EvdevInput:
+    def __init__(self, grab=True, devices_file="/proc/bus/input/devices"):
+        self.grab, self.devices_file = grab, devices_file
+        self._stop = threading.Event()
+        self._fds = {}
+        self._warned = False
+
+    def start(self, put):
+        if not sys.platform.startswith("linux") or not os.path.exists(self.devices_file):
+            return
+        threading.Thread(target=self._run, args=(put,), daemon=True, name="evdev").start()
+
+    def _scan(self):
+        try:
+            with open(self.devices_file) as f:
+                nums = find_keyboards(f.read())
+        except OSError:
+            return
+        for n in nums:
+            path = f"/dev/input/event{n}"
+            if path in self._fds:
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            except PermissionError:
+                if not self._warned:
+                    self._warned = True
+                    print(f"evdev: no permission for {path}: add the user to the 'input' group", file=sys.stderr)
+                continue
+            except OSError:
+                continue
+            if self.grab:
+                try:
+                    import fcntl
+                    fcntl.ioctl(fd, 0x40044590, 1)           # EVIOCGRAB: we get the keys, the console does not
+                except OSError:
+                    pass
+            self._fds[path] = fd
+
+    def _run(self, put):
+        import time
+        last_scan = 0
+        try:
+            while not self._stop.is_set():
+                if time.time() - last_scan > 5:                   # pick up keyboards plugged in later
+                    self._scan()
+                    last_scan = time.time()
+                if not self._fds:
+                    self._stop.wait(2)
+                    continue
+                try:
+                    ready, _, _ = select.select(list(self._fds.values()), [], [], 1.0)
+                except (OSError, ValueError):
+                    continue
+                for fd in ready:
+                    try:
+                        buf = os.read(fd, 24 * 64)
+                    except BlockingIOError:
+                        continue
+                    except OSError:                               # unplugged
+                        for p, f in list(self._fds.items()):
+                            if f == fd:
+                                del self._fds[p]
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+                        continue
+                    for code, value in parse_events(buf):
+                        cmd = KEY.get(code)
+                        if cmd and (value == 1 or (value == 2 and cmd in _AUTOREPEAT_OK)):
+                            put(cmd)
+        finally:
+            for fd in list(self._fds.values()):                   # closed here, by the thread that uses them
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            self._fds.clear()
+
+    def stop(self):
+        self._stop.set()
