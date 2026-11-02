@@ -1329,12 +1329,15 @@ def create(argv=None):
         if saved.get("muted"):
             extra.append("--mute=yes")
         cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + extra
-    if cfg["profile"] == "mac" and cfg.get("remember", True):      # window size comes back too (position: macOS decides)
+    if cfg["prof"].get("remember_window", cfg["profile"].startswith("mac")) and cfg.get("remember", True):
+        # window size and fullscreen come back (position: the window manager decides)
         if saved.get("win") and not any(x.startswith("--geometry") for x in a.mpv_arg):
-            cfg["prof"]["mpv"] = [x for x in cfg["prof"]["mpv"] if not x.startswith("--geometry")] + \
+            cfg["prof"]["mpv"] = [x for x in cfg["prof"]["mpv"] if not x.startswith(("--geometry", "--autofit"))] + \
                 [f"--geometry={saved['win'][0]}x{saved['win'][1]}"]
         if saved.get("fullscreen") and not a.fs:
             cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + ["--fs"]
+        elif "fullscreen" not in saved and cfg["prof"].get("fullscreen_first_run") and not a.fs:
+            cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + ["--fs"]      # first run on a TV-like box: start fullscreen
     tv = TV(cfg, src, idx)
     web = dict(cfg.get("web", {}))
     if a.web:

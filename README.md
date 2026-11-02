@@ -166,9 +166,26 @@ real TV. If a key does nothing, run `cec-client -d 16` on the Pi, press it, and 
 `config.json`. Important keys: `start_channel`, `bar_seconds`, `bumps` (set false to skip slides),
 `noise` (`"lavfi"` or `"none"`), `drift_s` (re-seek if playback is more than this many seconds off the schedule),
 `remember`, `web` and `cec` (see above), `splash_seconds`, `sleep_action` (`blank` or `quit`), and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
-Profiles: `mac`, `pi` (composite), `hdmi` (Pi on HDMI/TV), and black-and-white versions `mac-bw`, `pi-bw`, `hdmi-bw`. The overlays follow the window or display shape (4:3 or 16:9), also when you resize.
+Profiles: `mac`, `pi` (composite), `hdmi` (Pi on HDMI/TV), `desktop` / `desktop-lite` (Linux laptops and PCs), and black-and-white versions `mac-bw`, `pi-bw`, `hdmi-bw`, `desktop-bw`. The overlays follow the window or display shape (4:3 or 16:9), also when you resize.
 Choose a profile with `--profile pi` or the `profile` key. Cache: `~/.cache/spelunkr` (lineup refreshed every 10 min,
 manifests kept per version).
+
+## Laptops and other Linux machines
+
+Any Linux machine with a desktop (X11 or Wayland) can be a TV: an old netbook, a Pinebook, a spare PC. **Untested on real Linux hardware so far** (the logic is tested on the Mac).
+
+```bash
+sudo apt install mpv python3        # Debian / Ubuntu names
+python3 tv.py --profile desktop     # starts fullscreen the first time; f toggles; the window size is remembered
+```
+
+* `desktop`: software decoding, plus hardware decoding where mpv finds a safe one (VA-API). Right for anything with a few reasonable cores (e.g. a Pinebook's quad A53).
+* `desktop-lite`: for weak machines (an Atom N270 netbook, an 800 MHz CPU): cheaper decoding settings and the Xv video output instead of OpenGL, since old Intel graphics cannot run mpv's `gpu` output well. Needs X11; without X use `--vo=drm` instead of `--vo=xv`. Check dropped frames with `d`.
+* `desktop-bw`: the black-and-white version.
+* A 32-bit CPU (Atom N270, Pentium M) needs a 32-bit Linux. Debian 12 (bookworm) still ships i386. Newer Debian dropped it.
+* To start with the desktop, add a file `~/.config/autostart/spelunkr.desktop` containing `[Desktop Entry]`, `Type=Application`, `Name=Spelunkr TV`
+  and `Exec=python3 /path/to/tv.py --profile desktop`. The keyboard, remote and web remote work as everywhere else.
+* The Windows and Mac-specific parts (the `.app`, the menu bar) do not apply. Windows is not supported.
 
 ## Black-and-white screens
 
