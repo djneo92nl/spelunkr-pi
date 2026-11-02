@@ -247,6 +247,12 @@ To control it from your phone, set `"web": {"enabled": true, "token": "pick-a-se
 `http://spelunkr.local:8080/?token=pick-a-secret` on the phone. The same address serves a small JSON API for home automation;
 see the README. Keep it on your home network.
 
+### Why the HDMI profiles use 720p
+
+The Pi's GPU cannot make a texture larger than 2048x2048. At 1920x1080 the guide's overlay (full-screen background, dozens of cells and labels) needs
+more than that, mpv logs `OSD bitmaps do not fit on a surface with the maximum supported size 2048x2048`, and the overlay stops drawing. The `hdmi`
+profiles therefore set `--drm-mode=1280x720` (any TV takes 720p; it scales the picture itself). Composite is PAL, 720x576, and fits easily.
+
 ### If it misbehaves
 
 The client logs to `~/.cache/spelunkr/tv.log` (errors, crashes, start-ups) and keeps mpv's own output in `~/.cache/spelunkr/mpv.log` and

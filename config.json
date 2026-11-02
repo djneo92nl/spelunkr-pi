@@ -81,7 +81,7 @@
       "black_graph": "av://lavfi:color=c=black:s=160x120:r=5"
     },
     "hdmi": {
-      "_note": "Measured on a Pi 2: --vo=gpu --gpu-context=drm --profile=fast plays smoothly with hardware decode (v4l2m2m-copy); --vo=drm (CPU scaling) was too slow at HDMI resolutions. Not yet tested on composite or a Pi 1.",
+      "_note": "Measured on a Pi 2. --vo=gpu --gpu-context=drm --profile=fast plays smoothly with hardware decode (v4l2m2m-copy). 720p is deliberate: at 1080p the guide's overlay needs a texture bigger than the Pi GPU's 2048x2048 limit and stops drawing (mpv.log: 'OSD bitmaps do not fit on a surface'); --vo=drm (CPU scaling) was too slow.",
       "mpv": [
         "mpv",
         "--idle=yes",
@@ -95,6 +95,7 @@
         "--vo=gpu",
         "--gpu-context=drm",
         "--profile=fast",
+        "--drm-mode=1280x720",
         "--hwdec=v4l2m2m-copy",
         "--framedrop=vo",
         "--vd-lavc-threads=1",
@@ -182,7 +183,7 @@
       "_note": "Black-and-white preview on the Mac."
     },
     "hdmi-bw": {
-      "_note": "Black-and-white screen on HDMI.",
+      "_note": "Measured on a Pi 2. --vo=gpu --gpu-context=drm --profile=fast plays smoothly with hardware decode (v4l2m2m-copy). 720p is deliberate: at 1080p the guide's overlay needs a texture bigger than the Pi GPU's 2048x2048 limit and stops drawing (mpv.log: 'OSD bitmaps do not fit on a surface'); --vo=drm (CPU scaling) was too slow.",
       "mpv": [
         "mpv",
         "--idle=yes",
@@ -196,6 +197,7 @@
         "--vo=gpu",
         "--gpu-context=drm",
         "--profile=fast",
+        "--drm-mode=1280x720",
         "--hwdec=v4l2m2m-copy",
         "--framedrop=vo",
         "--vd-lavc-threads=1",
