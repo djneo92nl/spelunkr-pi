@@ -74,7 +74,8 @@
         "--sub-auto=no",
         "--sub-font-size=42",
         "--sub-border-size=2.5",
-        "--sub-pos=94"
+        "--sub-pos=94",
+        "--audio-device=alsa/plughw:CARD=Headphones,DEV=0"
       ],
       "noise_graph": "av://lavfi:nullsrc=s=96x72:r=12,geq=random(1)*255:128:128",
       "black_graph": "av://lavfi:color=c=black:s=160x120:r=5"
@@ -108,7 +109,8 @@
         "--sub-auto=no",
         "--sub-font-size=42",
         "--sub-border-size=2.5",
-        "--sub-pos=94"
+        "--sub-pos=94",
+        "--audio-device=alsa/hdmi:CARD=vc4hdmi,DEV=0"
       ],
       "noise_graph": "av://lavfi:nullsrc=s=160x90:r=12,geq=random(1)*255:128:128",
       "black_graph": "av://lavfi:color=c=black:s=160x90:r=5"
@@ -142,7 +144,8 @@
         "--sub-auto=no",
         "--sub-font-size=42",
         "--sub-border-size=2.5",
-        "--sub-pos=94"
+        "--sub-pos=94",
+        "--audio-device=alsa/plughw:CARD=Headphones,DEV=0"
       ],
       "noise_graph": "av://lavfi:nullsrc=s=96x72:r=12,geq=random(1)*255:128:128",
       "black_graph": "av://lavfi:color=c=black:s=160x120:r=5",
@@ -207,7 +210,8 @@
         "--sub-auto=no",
         "--sub-font-size=42",
         "--sub-border-size=2.5",
-        "--sub-pos=94"
+        "--sub-pos=94",
+        "--audio-device=alsa/hdmi:CARD=vc4hdmi,DEV=0"
       ],
       "noise_graph": "av://lavfi:nullsrc=s=160x90:r=12,geq=random(1)*255:128:128",
       "black_graph": "av://lavfi:color=c=black:s=160x90:r=5",
@@ -230,5 +234,6 @@
   "test_card": true,
   "splash_seconds": 2.5,
   "sleep_action": "blank",
-  "evdev": true
+  "evdev": true,
+  "guide_cache_channels": 8
 }

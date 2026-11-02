@@ -195,7 +195,10 @@ does it stutter, does it have sound.
 `?` for the key list and status, `t` for a test card (handy for centring the picture and checking colours).
 A power warning ("UNDERVOLTAGE") means the power supply or cable is too weak; fix that before judging stutter.
 
-**Sound:** the default output may be HDMI. List the cards and pick the 3.5 mm jack:
+**Sound:** the `hdmi` profiles send sound to the HDMI output (`--audio-device=alsa/hdmi:CARD=vc4hdmi,DEV=0`, confirmed on a Pi 2) and the
+`pi` (composite) profiles to the 3.5 mm jack (`alsa/plughw:CARD=Headphones,DEV=0`, not yet confirmed). Your card names are in
+`aplay -l` and `mpv --audio-device=help`; edit the `--audio-device=` entry of the profile if yours differ.
+(Older note:) the default output may be HDMI. List the cards and pick the 3.5 mm jack:
 
 ```bash
 aplay -l                       # look for "Headphones" or "bcm2835"
@@ -243,6 +246,12 @@ To control it from your phone, set `"web": {"enabled": true, "token": "pick-a-se
 (or add `--web --web-token pick-a-secret` to `ExecStart` in the service file), restart the service, and open
 `http://spelunkr.local:8080/?token=pick-a-secret` on the phone. The same address serves a small JSON API for home automation;
 see the README. Keep it on your home network.
+
+### If it misbehaves
+
+The client logs to `~/.cache/spelunkr/tv.log` (errors, crashes, start-ups) and keeps mpv's own output in `~/.cache/spelunkr/mpv.log` and
+`mpv.err`. If mpv ever crashes, the client logs the exit code, starts a new mpv and returns to the channel; after four crashes in five minutes it
+gives up. When something goes wrong, send me those three files.
 
 ### Updating later
 

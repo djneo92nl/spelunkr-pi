@@ -11,6 +11,7 @@ i = info bar, g = guide, f = fullscreen (also double click), q = quit. Works fro
 """
 import argparse
 import json
+import logging
 import os
 import queue
 import sys
@@ -26,6 +27,27 @@ import subs as subsmod
 from mpvctl import Mpv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+log = logging.getLogger("tv")
+
+
+def setup_logging(cache_dir):
+    """Log to <cache>/tv.log (kept small) and warnings to stderr, including threads that die: a TV box runs unattended."""
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, "tv.log")
+    try:
+        if os.path.getsize(path) > 1_000_000:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for handler in (logging.FileHandler(path), logging.StreamHandler(sys.stderr)):
+        handler.setFormatter(fmt)
+        handler.setLevel(logging.INFO if isinstance(handler, logging.FileHandler) else logging.WARNING)
+        root.addHandler(handler)
+    threading.excepthook = lambda a: log.error("thread %s died", a.thread.name,
+                                               exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
 OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_PANEL, OVL_MENU = 1, 2, 3, 4, 5, 6, 7, 8
 SLEEP_STEPS = [0, 15, 30, 60, 90, 120]       # minutes
 
@@ -186,6 +208,7 @@ class TV:
         self.gain = 0              # what mpv currently has
         self.want_gain = 0         # what the current entry wants (ads are turned down by their gainDb)
         self.web_url = None
+        self.mpv_restarts = []
         self.menu = None                          # {"sel": n} while the settings menu is open
         self.panel_payload = None
         self.sleep_at, self.sleep_warned, self.asleep = None, False, False
@@ -194,12 +217,8 @@ class TV:
 
     # ---- lifecycle ----
     def run(self):
-        bindings = dict(inputs.KEY_BINDINGS)
-        self.mpv = Mpv(self.cfg["prof"]["mpv"], bindings, mono=bool(self.cfg["prof"].get("mono")))
-        threading.Thread(target=self._pump_mpv, daemon=True).start()
+        self.start_mpv()
         threading.Thread(target=self._guide_worker, daemon=True).start()
-        for i, prop in enumerate(("osd-width", "osd-height"), 1):
-            self.mpv.command("observe_property", i, prop)      # overlays follow the window / display shape
         st = self.store.load()
         if self.cfg.get("remember", True):
             if isinstance(st.get("volume"), (int, float)):
@@ -228,13 +247,57 @@ class TV:
                     self.handle(kind, val)
                 except queue.Empty:
                     pass
-                self.tick()
+                except Exception:
+                    log.exception("error handling an event")      # one bad event must not take the whole box down
+                try:
+                    self.tick()
+                except Exception:
+                    log.exception("error in the main loop")
+                    time.sleep(0.5)
         finally:
             kb.stop()
             for extra in self.extra_inputs:
                 extra.stop()
             self.save_window()
             self.mpv.quit()
+
+    def start_mpv(self):
+        """Start (or restart) the mpv process and the thread that forwards its events."""
+        argv = [a for a in self.cfg["prof"]["mpv"] if not a.startswith(("--volume=", "--mute="))]
+        argv += [f"--volume={self.volume}"] + (["--mute=yes"] if self.muted else [])
+        self.mpv = Mpv(argv, dict(inputs.KEY_BINDINGS), mono=bool(self.cfg["prof"].get("mono")),
+                       log_dir=self.cfg["cache_dir"])
+        self.mpv.res = (osd.W, osd.H)
+        threading.Thread(target=self._pump_mpv, args=(self.mpv,), daemon=True, name="mpv-events").start()
+        for i, prop in enumerate(("osd-width", "osd-height"), 1):
+            self.mpv.command("observe_property", i, prop)      # overlays follow the window / display shape
+
+    def on_mpv_died(self, mpv, code):
+        """mpv exited. Code 0 is the user closing it: quit. Anything else is a crash: start a new one (a TV box must come back)."""
+        if mpv is not self.mpv or not self.running:
+            return
+        if code == 0:
+            self.running = False
+            return
+        now = time.time()
+        self.mpv_restarts = [x for x in self.mpv_restarts if now - x < 300]
+        log.error("mpv exited unexpectedly (exit code %s); see %s/mpv.log and mpv.err", code, self.cfg["cache_dir"])
+        if len(self.mpv_restarts) >= 4:
+            log.error("mpv keeps crashing; giving up")
+            self.running = False
+            return
+        self.mpv_restarts.append(now)
+        try:
+            self.start_mpv()
+        except Exception:
+            log.exception("could not restart mpv")
+            self.running = False
+            return
+        self.win = {}
+        self.guide = self.menu = self.panel = None
+        self.loading = self.expect_url = None
+        self.screen_key = self.bar_second = self.load_tick = None
+        self.tune(self.idx)
 
     def _debug_shots(self, spec):
         t0 = time.time()
@@ -255,11 +318,11 @@ class TV:
             time.sleep(max(0, float(secs) - (time.time() - t0)))
             self.q.put(("cmd", cmd))
 
-    def _pump_mpv(self):
+    def _pump_mpv(self, mpv):
         while True:
-            ev = self.mpv.events.get()
+            ev = mpv.events.get()
             if ev["event"] == "mpv-exited":
-                self.q.put(("exit", None))
+                self.q.put(("mpv-died", (mpv, ev.get("code"))))
                 return
             self.q.put(("mpv", ev))
 
@@ -267,6 +330,8 @@ class TV:
     def handle(self, kind, val):
         if kind == "exit":
             self.running = False
+        elif kind == "mpv-died":
+            self.on_mpv_died(*val)
         elif kind == "guide":
             self.draw_guide()
         elif kind == "mpv":
@@ -759,7 +824,7 @@ class TV:
     def close_guide(self):
         self.guide = None
         self.mpv.overlay(OVL_GUIDE, "")
-        S.forget(keep_channel=self.chan["id"])   # free the other channels' built schedules
+        S.forget(keep_channel=self.chan["id"], keep_recent=self.cfg.get("guide_cache_channels", 8))
         self.src._gbundles.clear()
         self.need_entry = False
         self.screen_key = None
@@ -1230,6 +1295,8 @@ def create(argv=None):
     ap.add_argument("--mpv-arg", action="append", default=[], metavar="ARG", help="extra mpv option, repeatable")
     a = ap.parse_args(argv)
     cfg = load_config(a.config, a.profile)
+    setup_logging(cfg["cache_dir"])
+    log.info("start: profile=%s", cfg["profile"])
     saved_settings = Store(cfg["cache_dir"]).load().get("settings", {}) if cfg.get("remember", True) else {}
     for key in ("bar_seconds", "noise", "bumps"):         # things changed in the settings menu stay changed
         if key in saved_settings:

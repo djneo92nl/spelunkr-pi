@@ -29,7 +29,7 @@ def _to_gray(match):
 class Mpv:
     mono = False           # True: turn every overlay colour into its gray equivalent (black-and-white screens)
 
-    def __init__(self, argv_template, key_bindings=None, mono=False):
+    def __init__(self, argv_template, key_bindings=None, mono=False, log_dir=None):
         """argv_template: list with {sock} and {inputconf} placeholders. key_bindings: {mpv-key: tv-command}."""
         self.mono = mono
         self.dir = tempfile.mkdtemp(prefix="spelunkr-")
@@ -39,12 +39,17 @@ class Mpv:
             for key, cmd in (key_bindings or {}).items():
                 f.write(f"{key} script-message tv {cmd}\n")
         argv = [a.replace("{sock}", self.sock_path).replace("{inputconf}", conf) for a in argv_template]
-        self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+        err = subprocess.DEVNULL
+        if log_dir:                       # keep mpv's own log and stderr: they say why it died
+            os.makedirs(log_dir, exist_ok=True)
+            argv += [f"--log-file={os.path.join(log_dir, 'mpv.log')}", "--msg-level=all=warn"]
+            err = open(os.path.join(log_dir, "mpv.err"), "ab")
+        self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
         self.events = queue.Queue()
         self._ids = itertools.count(1)
         self._waiting = {}          # request_id -> (Event, [response])
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()         # the table of requests waiting for a reply
+        self._send_lock = threading.Lock()    # one writer at a time; separate so a slow mpv can never block the reader
         self._sock = self._connect()
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
@@ -71,7 +76,11 @@ class Mpv:
             except OSError:
                 chunk = b""
             if not chunk:
-                self.events.put({"event": "mpv-exited"})
+                try:
+                    code = self.proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    code = None
+                self.events.put({"event": "mpv-exited", "code": code})
                 return
             buf += chunk
             while b"\n" in buf:
@@ -93,7 +102,7 @@ class Mpv:
     # -- commands --
     def _send(self, payload):
         data = (json.dumps(payload) + "\n").encode()
-        with self._lock:
+        with self._send_lock:
             self._sock.sendall(data)
 
     def command(self, *args):

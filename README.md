@@ -225,6 +225,14 @@ another input class (see the top of `inputs.py`).
 Set `"bumps": false` (no slide screens) and `"noise": "none"`; the info bar is the cheapest overlay. If even that drops frames,
 the Pi 3 fallback will not need any change.
 
+## Logs and crash recovery
+
+`~/.cache/spelunkr/tv.log` records start-ups, errors and any thread that dies. mpv's own log and stderr are kept next to it (`mpv.log`, `mpv.err`).
+If mpv exits abnormally the client restarts it and tunes back in (up to four times in five minutes), so an unattended box recovers by itself.
+An error handling a single key press or a single tick of the main loop is logged and the loop carries on.
+The guide keeps the last 8 channels' built schedules in memory (`guide_cache_channels`) so reopening it is quick, and building one channel's
+schedule no longer holds up the playback loop.
+
 ## Files
 
 | file | what |

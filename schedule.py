@@ -365,6 +365,7 @@ class Version:
         self._ad_plan = None
         self._ad_carry = {}   # cycle -> {"recent": [[slice_idx, ms]], "fromMs": int}
         self.deck_mode = manifest.get("engine", 1) >= 5
+        self.lock = threading.RLock()   # building cycles is the slow part; only callers of the SAME version wait on each other
         self.cycles = []     # [{start_ms, length_ms, entries}]
         self._deck_carry = {}  # cycle -> carry for that cycle
 
@@ -470,36 +471,23 @@ class Version:
 
 # ---- lookup (bundle: uo, v0, on) ----
 _VERSIONS = {}                      # built Version objects, keyed by (channel, version, epoch, startIndex)
-_LOCK = threading.RLock()           # the TV loop and the guide's loader thread both call now_playing()
+_USED = {}                          # channel id -> last use (for forget())
+_LOCK = threading.RLock()           # guards only the two dicts above; never held while a schedule is being built
 
 
-def forget(keep_channel=None):
-    """Free built schedules (they are big for ad channels), except for one channel."""
+def forget(keep_channel=None, keep_recent=0):
+    """Free built schedules (big for ad channels): keep `keep_channel` and the `keep_recent` most recently used others."""
     with _LOCK:
-        for k in [k for k in _VERSIONS if k[0] != keep_channel]:
+        others = sorted((c for c in _USED if c != keep_channel), key=lambda c: _USED[c], reverse=True)
+        keep = set(others[:keep_recent])
+        for k in [k for k in _VERSIONS if k[0] != keep_channel and k[0] not in keep]:
             del _VERSIONS[k]
+        for c in [c for c in _USED if c != keep_channel and c not in keep]:
+            del _USED[c]
 
 
 def now_playing(channel, manifests, platforms, t_ms):
     """channel: lineup channel dict; manifests / platforms: {v: json} (each manifest names its own platform file)."""
-    with _LOCK:
-        return _now_playing(channel, manifests, platforms, t_ms, _VERSIONS)
-
-
-def timeline(channel, manifests, platforms, t0_ms, t1_ms):
-    """Shows on air between t0 and t1 (the one already playing at t0 included): [{start_ms, end_ms, item}]."""
-    out, t = [], t0_ms
-    for _ in range(600):
-        if t >= t1_ms:
-            break
-        r = now_playing(channel, manifests, platforms, t)
-        if r["entry"]["type"] == "video":
-            out.append({"start_ms": r["start_ms"], "end_ms": r["end_ms"], "item": r["entry"]["item"]})
-        t = int(r["end_ms"]) + 1
-    return out
-
-
-def _now_playing(channel, manifests, platforms, t_ms, _cache):
     versions = sorted(channel["versions"], key=lambda x: x["v"])
     cur = None
     for lv in reversed(versions):
@@ -509,10 +497,13 @@ def _now_playing(channel, manifests, platforms, t_ms, _cache):
     if cur is None:
         cur = min(versions, key=lambda x: (x["effectiveAtMs"], -x["v"]))
     ck = (channel["id"], cur["v"], cur["epochMs"], cur.get("startIndex", 0))
-    if ck not in _cache:
-        _cache[ck] = Version(channel["id"], cur, manifests[cur["v"]], platforms[cur["v"]])
-    ver = _cache[ck]
-    k, cyc = ver.cycle_at(t_ms)
+    with _LOCK:
+        ver = _VERSIONS.get(ck)
+        if ver is None:
+            ver = _VERSIONS[ck] = Version(channel["id"], cur, manifests[cur["v"]], platforms[cur["v"]])
+        _USED[channel["id"]] = time.time()
+    with ver.lock:                      # slow on first use of a version; another channel's callers are not held up by it
+        k, cyc = ver.cycle_at(t_ms)
     rel = t_ms - cyc["start_ms"]
     entries = cyc["entries"]
     e = entries[0]
@@ -528,6 +519,19 @@ def _now_playing(channel, manifests, platforms, t_ms, _cache):
         end = min(later)
     return {"entry": e, "version": ver.v, "cycle": k, "offset_s": (t_ms - start) / 1000,
             "start_ms": start, "end_ms": end, "remaining_s": (end - t_ms) / 1000}
+
+
+def timeline(channel, manifests, platforms, t0_ms, t1_ms):
+    """Shows on air between t0 and t1 (the one already playing at t0 included): [{start_ms, end_ms, item}]."""
+    out, t = [], t0_ms
+    for _ in range(600):
+        if t >= t1_ms:
+            break
+        r = now_playing(channel, manifests, platforms, t)
+        if r["entry"]["type"] == "video":
+            out.append({"start_ms": r["start_ms"], "end_ms": r["end_ms"], "item": r["entry"]["item"]})
+        t = int(r["end_ms"]) + 1
+    return out
 
 
 def media_url(item):
