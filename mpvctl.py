@@ -162,7 +162,9 @@ class Mpv:
         if ass:
             if self.mono:
                 ass = _ASS_COLOUR.sub(_to_gray, ass)
-            self.command("osd-overlay", oid, "ass-events", ass, self.res[0], self.res[1])
+            # z = id: without it mpv draws the most recently updated overlay on top, so a late redraw of the tuning card
+            # could cover the guide or teletext. With it the layers stay in the order of their ids (see OVL_* in tv.py).
+            self.command("osd-overlay", oid, "ass-events", ass, self.res[0], self.res[1], oid)
         else:
             self.command("osd-overlay", oid, "none", "")
 

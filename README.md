@@ -5,6 +5,16 @@ It works out what is on right now (same maths as the website, see [SCHEDULE.md](
 and draws a cable-box info bar, station-break slides and ad breaks, all as text overlays. Personal, non-commercial use.
 It caches data and streams from archive.org like the site does; it does not download or redistribute anything.
 
+## Screenshots
+
+Real captures from the client on a Mac (720x540 window); the overlays follow the window shape, 4:3 or 16:9.
+
+| | |
+|---|---|
+| ![The TV guide](docs/screenshots/guide.webp)<br>**TV guide** (`g`): the website's blue grid, commercials and breaks as dark cells, the selected show's description underneath | ![The info bar](docs/screenshots/info-bar.webp)<br>**Info bar**: channel logo, show, progress and what is next |
+| ![Show details](docs/screenshots/details.png)<br>**Show details** (`e`): description, runtime, season, IMDb id, mature flag | ![Teletext index](docs/screenshots/teletext-index.png)<br>**Teletext** (`x`): page 100 |
+| ![Teletext search](docs/screenshots/teletext-search.png)<br>**Search** (teletext 501): an on-screen keyboard that works from a remote | |
+
 ## Run on the Mac
 
 ```bash

@@ -135,7 +135,7 @@ class Pages:
                            ("Search and reminders", 500), ("Trivia, music credits", 600), ("News headlines", 700),
                            ("Status", 800), ("Keys and help", 900)]:
             rows.append(dots(label, str(num)))
-        rows += ["", "{w}Colour keys R G Y B jump along the bottom.", "{w}UP/DOWN next page  LEFT/RIGHT sub-page",
+        rows += ["", "{w}Colour keys R G Y B follow the links.", "{w}UP/DOWN next page  LEFT/RIGHT sub-page",
                  "{w}X or BACK returns to the picture."]
         return Page(100, "INDEX", [rows], links=LINKS, rotate_s=0)
 
