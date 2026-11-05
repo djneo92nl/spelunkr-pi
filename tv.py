@@ -24,6 +24,9 @@ import osd
 import prefetch
 import schedule as S
 import subs as subsmod
+import search as searchmod
+import teletext
+import ttpages
 from mpvctl import Mpv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -49,6 +52,9 @@ def setup_logging(cache_dir):
     threading.excepthook = lambda a: log.error("thread %s died", a.thread.name,
                                                exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
 OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_PANEL, OVL_MENU = 1, 2, 3, 4, 5, 6, 7, 8
+OVL_TT, OVL_TT_HDR = 9, 10               # teletext page, and its header row (redrawn every second for the clock)
+TT_CACHE_S = 60
+TT_DIGITS_S = 3
 SLEEP_STEPS = [0, 15, 30, 60, 90, 120]       # minutes
 
 
@@ -132,8 +138,9 @@ class Source:
         items = S.fetch(v["details"], self.cache)[0].get("items") or []
         return items[index] if isinstance(index, int) and 0 <= index < len(items) else None
 
-    def timeline(self, channel_id, t0, t1):
-        """Shows for the guide. Uses its own small cache so the playing channel's bundle is not evicted."""
+    def timeline(self, channel_id, t0, t1, breaks=False):
+        """Shows for the guide (and, with breaks=True, the gaps between them). Uses its own small cache so the
+        playing channel's bundle is not evicted."""
         ch = next(c for c in self.lineup["channels"] if c["id"] == channel_id)
         key = tuple(v["v"] for v in ch["versions"])
         b = self._gbundles.get(channel_id)
@@ -142,7 +149,7 @@ class Source:
             platforms = {v: S.fetch(m["platform"], self.cache)[0] for v, m in manifests.items()}
             b = (key, ch, manifests, platforms)
             self._gbundles[channel_id] = b
-        return S.timeline(*b[1:], t0, t1)
+        return S.timeline(*b[1:], t0, t1, breaks=breaks)
 
     def bundle(self, channel_id):
         """(channel, manifests, platforms) for the channel's current lineup versions."""
@@ -214,6 +221,20 @@ class TV:
         self.sleep_at, self.sleep_warned, self.asleep = None, False, False
         self.tune_after = 0                       # boot splash: tune once this time has passed
         self.sys_cache = (0, "")
+        saved = self.store.load() if cfg.get("remember", True) else {}
+        self.favs = set(saved.get("favourites") or [])      # channel ids; "A" toggles, the menu can limit surfing to them
+        self.hidden = set(saved.get("hidden") or [])        # skipped by channel up / down, still reachable by number
+        self.reminders = [r for r in (saved.get("reminders") or []) if r.get("start_ms", 0) > time.time() * 1000 - 5 * 60000]
+        self.reminded = set()                     # (channel, start) pairs already announced two minutes ahead
+        self.reminders_at = 0
+        self.search = {"query": "", "cur": [3, 8], "results": []}     # the teletext search: text, cursor on the keyboard, hits
+        self._search_index = None
+        self.text_mode = False
+        self.tt = None                            # teletext state while the service is open (see open_teletext)
+        self.tt_pages = ttpages.Pages(self)
+        self.tt_jobs = None
+        self.audio = {"list": [], "cur": None}   # output devices mpv reported when the menu was opened
+        self.gdesc, self.gdesc_pending = {}, set()   # guide footer descriptions: (channel, version, index) -> text
 
     # ---- lifecycle ----
     def run(self):
@@ -360,6 +381,12 @@ class TV:
             self.on_subs(*val)
         elif kind == "details":
             self.on_details(*val)
+        elif kind == "tt":
+            self.on_tt(*val)
+        elif kind == "gdesc":
+            self.on_gdesc(*val)
+        elif kind == "gdetails":
+            self.on_gdetails(*val)
         else:
             self.command(val)
 
@@ -384,19 +411,40 @@ class TV:
             self.set_sleep(0, "SLEEP TIMER CANCELLED")   # a key press in the last minute means "still watching"
             return
         if c == "click":
-            c = "bar" if (self.guide is None and self.menu is None and self.panel is None) else "back"
+            c = "bar" if (self.guide is None and self.menu is None and self.panel is None and self.tt is None) else "back"
         if c == "back":                              # TV remote "exit": closes whatever is open
-            if self.menu is not None:
+            if self.tt is not None:
+                self.close_teletext()
+            elif self.menu is not None:
                 self.close_menu()
             elif self.guide is not None:
                 self.close_guide()
             elif self.panel is not None:
                 self.close_panel()
             return
-        if c == "enter" and not self.digits and self.guide is None and self.menu is None:
+        if c == "enter" and not self.digits and self.guide is None and self.menu is None and self.tt is None:
             c = "info"                               # OK / Select with nothing else going on shows the info bar
         if c in ("volup", "voldown", "mute"):
             self.adjust_volume(c)
+            return
+        if c == "text":                              # teletext on / off
+            if self.tt is not None:
+                self.close_teletext()
+            else:
+                self.open_teletext()
+            return
+        if c.startswith("search:"):                  # web remote: search every channel, show the results in teletext
+            self.open_teletext(501)
+            self.run_search(c[7:])
+            return
+        if c.startswith("page:"):                    # web remote / automation: jump straight to a teletext page
+            try:
+                self.open_teletext(int(c[5:]))
+            except ValueError:
+                pass
+            return
+        if self.tt is not None:
+            self.tt_command(c)
             return
         if self.menu is not None:
             self.menu_command(c)
@@ -428,6 +476,9 @@ class TV:
             except ValueError:
                 pass
             return
+        if c in ("favourite", "hide", "favs_only"):
+            self.favourite_command(c)
+            return
         if c == "bar":
             self.show_bar()
             return
@@ -446,9 +497,9 @@ class TV:
         if self.guide is not None and self.guide_command(c):
             return
         if c == "up":
-            self.tune((self.idx + 1) % n)
+            self.tune(self.step_channel(1))
         elif c == "down":
-            self.tune((self.idx - 1) % n)
+            self.tune(self.step_channel(-1))
         elif c == "last":
             self.tune(self.last_idx)
         elif c == "info":
@@ -479,6 +530,8 @@ class TV:
         self.store.save(volume=self.volume, muted=self.muted)
         self.mpv.overlay(OVL_TOAST, osd.volume_toast(self.volume, self.muted))
         self.toast_until = time.time() + 1.6
+        if self.tt is not None:                      # the toast is under the teletext page: say it on the status line instead
+            self.tt_status("MUTED" if self.muted else f"VOLUME {self.volume}%")
 
     def tune_to(self, which):
         """Tune by dial number or channel id; ignore unknown ones."""
@@ -488,6 +541,62 @@ class TV:
                     self.close_guide()
                 self.tune(i)
                 return
+
+    # ---- favourites and hidden channels ----
+    def dress(self, ch):
+        """The channel dict with fav / hidden flags, for the screens that mark them."""
+        return dict(ch, fav=ch["id"] in self.favs, hidden=ch["id"] in self.hidden)
+
+    def surf_only_favs(self):
+        return bool(self.cfg.get("favourites_only")) and any(c["id"] in self.favs and c["id"] not in self.hidden for c in self.chans)
+
+    def step_channel(self, d):
+        """Index of the next channel up (+1) or down (-1) that is not hidden (and is a favourite, if only favourites are wanted)."""
+        n, only = len(self.chans), self.surf_only_favs()
+        i = self.idx
+        for _ in range(n):
+            i = (i + d) % n
+            cid = self.chans[i]["id"]
+            if cid not in self.hidden and (not only or cid in self.favs):
+                return i
+        return (self.idx + d) % n                     # everything is hidden: surf through all of them
+
+    def _remember_marks(self):
+        self.store.save(favourites=sorted(self.favs), hidden=sorted(self.hidden))
+
+    def favourite_command(self, c):
+        """favourite / hide toggle the guide's selected channel (or the current one); favs_only limits surfing to favourites."""
+        if self.tt is not None:
+            return
+        ch = self.chans[self.guide["sel"]] if self.guide is not None else self.chan
+        if c == "favs_only":
+            self.set_setting("favourites_only", not self.cfg.get("favourites_only"))
+            if self.cfg["favourites_only"] and not self.favs:
+                self.toast(osd.toast_text("NO FAVOURITES YET - PRESS A ON A CHANNEL"), 3)
+            else:
+                self.toast(osd.toast_text("ONLY FAVOURITES" if self.cfg["favourites_only"] else "ALL CHANNELS"))
+        elif c == "favourite":
+            self.hidden.discard(ch["id"])
+            if ch["id"] in self.favs:
+                self.favs.discard(ch["id"])
+                self.toast(osd.toast_text(f"CH {ch['dial']} NOT A FAVOURITE ANY MORE"))
+            else:
+                self.favs.add(ch["id"])
+                self.toast(osd.toast_text(f"CH {ch['dial']} IS A FAVOURITE"))
+        else:
+            self.favs.discard(ch["id"])
+            if ch["id"] in self.hidden:
+                self.hidden.discard(ch["id"])
+                self.toast(osd.toast_text(f"CH {ch['dial']} SHOWN AGAIN"))
+            else:
+                self.hidden.add(ch["id"])
+                self.toast(osd.toast_text(f"CH {ch['dial']} HIDDEN - TYPE ITS NUMBER TO WATCH IT"), 3)
+        self._remember_marks()
+        self.bar_second = None
+        if self.guide is not None:
+            self.draw_guide()
+        if self.menu is not None:
+            self.draw_menu()
 
     def commit_digits(self):
         d, self.digits = int(self.digits), ""
@@ -534,7 +643,7 @@ class TV:
         ch = self.chan
         snap = {"channel": {"dial": ch["dial"], "id": ch["id"], "name": ch["name"], "color": ch.get("color")},
                 "time_ms": self.src.now_ms(), "volume": self.volume, "muted": self.muted,
-                "guide_open": self.guide is not None, "asleep": self.asleep,
+                "guide_open": self.guide is not None, "teletext": self.tt["page"] if self.tt else None, "asleep": self.asleep,
                 "sleep_in_s": round(self.sleep_at - time.time()) if self.sleep_at else None, "captions": self.captions, "last_load_s": self.last_load, "error": self.error or None,
                 "loading": self.loading["stage"] if self.loading else None, "state": "tuning"}
         r = self.cur
@@ -589,6 +698,8 @@ class TV:
         self.draw_loading(force=True)
         if self.guide is not None:
             self.draw_guide()
+        if self.tt is not None:
+            self.tt_draw(force=True)
 
     # ---- loading status ----
     def loading_lines(self):
@@ -695,7 +806,9 @@ class TV:
         self.maybe_snapshot(now)
         self.update_diag(now)
         self.update_panel(now)
-        if self.guide is None and self.panel is None and self.menu is None:
+        self.update_tt(now)
+        self.check_reminders(now)
+        if self.guide is None and self.panel is None and self.menu is None and self.tt is None:
             self.draw_loading()
         if self.retry_at and now < self.retry_at:
             return
@@ -727,7 +840,7 @@ class TV:
         self.cur = r
         if self.guide is not None:
             self.refresh_guide_clock()
-        elif self.panel is None and self.menu is None:
+        elif self.panel is None and self.menu is None and self.tt is None:
             self.update_screen(r, t)
             self.update_bar(r, t)
         self.maybe_prefetch(r)
@@ -804,15 +917,17 @@ class TV:
         sec = int(now)
         if sec != self.bar_second:
             self.bar_second = sec
-            self.mpv.overlay(OVL_BAR, osd.info_bar(self.chan, r, self.upcoming(r), t,
+            self.mpv.overlay(OVL_BAR, osd.info_bar(self.dress(self.chan), r, self.upcoming(r), t,
                                                    sleep_s=(self.sleep_at - now) if self.sleep_at else None))
 
     # ---- guide ----
     def open_guide(self, mode="grid"):
         if self.panel is not None:
             self.close_panel()
+        if self.tt is not None:
+            self.close_teletext()
         t = self.src.now_ms()
-        self.guide = {"sel": self.idx, "off_ms": 0, "rows": {}, "t0": t, "asked": set(), "minute": t // 60000,
+        self.guide = {"sel": self.idx, "off_ms": 0, "rows": {}, "brk": {}, "t0": t, "asked": set(), "minute": t // 60000,
                       "mode": mode}               # "grid" = the Prevue-style guide, "now" = list of what is on now
         self.mpv.overlay(OVL_BAR, "")
         self.mpv.overlay(OVL_SCREEN, "")
@@ -851,10 +966,10 @@ class TV:
             g["sel"] = (g["sel"] + 1) % n
         elif c == "left":
             g["off_ms"] = max(0, g["off_ms"] - 30 * 60000)
-            g["rows"].clear(); g["asked"].clear()
+            self._guide_reset(g)
         elif c == "right":
             g["off_ms"] = min(10 * 3600000, g["off_ms"] + 30 * 60000)
-            g["rows"].clear(); g["asked"].clear()
+            self._guide_reset(g)
         elif c == "enter":
             idx = g["sel"]
             self.close_guide()
@@ -864,6 +979,12 @@ class TV:
             return True        # swallow everything else while the guide is open
         self.draw_guide()
         return True
+
+    @staticmethod
+    def _guide_reset(g):
+        g["rows"].clear()
+        g["brk"].clear()
+        g["asked"].clear()
 
     def _page(self):
         return osd.NOW_ROWS if self.guide["mode"] == "now" else osd.GUIDE_ROWS
@@ -881,21 +1002,21 @@ class TV:
         g["t0"] = t0
         rows = []
         for ch in self.chans[first:first + self._page()]:
-            rows.append({"chan": ch, "programs": g["rows"].get(ch["id"])})
+            rows.append({"chan": self.dress(ch), "programs": g["rows"].get(ch["id"]), "breaks": g["brk"].get(ch["id"], [])})
             if ch["id"] not in g["asked"]:
                 g["asked"].add(ch["id"])
                 self.guide_jobs.put((ch["id"], t0, g["off_ms"]))
         if g["mode"] == "now":
             self.mpv.overlay(OVL_GUIDE, osd.now_list(rows, g["sel"], first, self.src.now_ms()))
         else:
-            self.mpv.overlay(OVL_GUIDE, osd.guide(rows, g["sel"], first, t0, self.src.now_ms()))
+            self.mpv.overlay(OVL_GUIDE, osd.guide(rows, g["sel"], first, t0, self.src.now_ms(), self.guide_description(rows, g["sel"] - first)))
 
     def refresh_guide_clock(self):
         g = self.guide
         minute = self.src.now_ms() // 60000
         if minute != g["minute"]:
             g["minute"] = minute
-            g["rows"].clear(); g["asked"].clear()
+            self._guide_reset(g)
             self.draw_guide()
 
     def _guide_worker(self):
@@ -903,12 +1024,14 @@ class TV:
         while True:
             cid, t0, off = self.guide_jobs.get()
             try:
-                progs = self.src.timeline(cid, t0, t0 + osd.GUIDE_SPAN_MS)
+                full = self.src.timeline(cid, t0, t0 + osd.GUIDE_SPAN_MS, breaks=True)
+                progs, brk = [p for p in full if "item" in p], [p for p in full if "item" not in p]
             except Exception:
-                progs = "error"
+                progs, brk = "error", []
             g = self.guide
             if g is not None and g["off_ms"] == off:     # drop results for a window the user already left
                 g["rows"][cid] = progs
+                g["brk"][cid] = brk
                 self.q.put(("guide", None))
 
     # ---- full-screen panels (help / test card) ----
@@ -916,6 +1039,8 @@ class TV:
         return osd.stand_by(reason, self.cfg.get("test_card", True))
 
     def open_panel(self, kind, payload=None):
+        if self.tt is not None:
+            self.close_teletext()
         if self.guide is not None:
             self.close_guide()
         self.panel, self.panel_at, self.panel_payload = kind, 0, payload
@@ -935,7 +1060,7 @@ class TV:
             return
         self.panel_at = now
         if self.panel == "details":
-            ass = osd.details_screen(self.chan, *self.panel_payload)
+            ass = osd.details_screen(self.panel_payload[3] if len(self.panel_payload) > 3 else self.chan, *self.panel_payload[:3])
         elif self.panel == "testcard":
             ass = osd.test_card("SPELUNKR TV", f"CH {self.chan['dial']}  {self.chan['name']}")
         else:
@@ -955,7 +1080,62 @@ class TV:
         return lines
 
     # ---- show details ----
+    def guide_description(self, rows, i):
+        """The selected show's description for the guide's footer: fetched in the background, then the guide is redrawn."""
+        if not (0 <= i < len(rows)) or not isinstance(rows[i]["programs"], list) or not rows[i]["programs"]:
+            return None
+        cid, p = rows[i]["chan"]["id"], rows[i]["programs"][0]
+        key = (cid, p["version"], p["videoIndex"])
+        if key in self.gdesc:
+            return self.gdesc[key]
+        if key not in self.gdesc_pending and p["videoIndex"] is not None:
+            self.gdesc_pending.add(key)
+
+            def work():
+                try:
+                    det = self.src.details(*key) or {}
+                except Exception:
+                    det = {}
+                self.q.put(("gdesc", (key, det.get("description") or "")))
+            threading.Thread(target=work, daemon=True, name="guide-desc").start()
+        return None
+
+    def on_gdesc(self, key, desc):
+        self.gdesc_pending.discard(key)
+        if len(self.gdesc) > 300:
+            self.gdesc.clear()
+        self.gdesc[key] = desc
+        if self.guide is not None and self.guide["mode"] == "grid" and desc:
+            self.draw_guide()
+
+    def open_guide_details(self):
+        """The details screen for the show selected in the guide (the one at the left edge of the grid)."""
+        g = self.guide
+        chan = self.chans[g["sel"]]
+        progs = g["rows"].get(chan["id"])
+        if not isinstance(progs, list) or not progs:
+            self.toast(osd.toast_text("NO SHOW TO DESCRIBE YET"))
+            return
+        p = progs[0]
+
+        def work():
+            try:
+                det = self.src.details(chan["id"], p["version"], p["videoIndex"])
+            except Exception:
+                det = None
+            self.q.put(("gdetails", (chan, p["item"], det, (p["end_ms"] - p["start_ms"]) / 1000)))
+        threading.Thread(target=work, daemon=True, name="details").start()
+
+    def on_gdetails(self, chan, item, det, runtime):
+        if self.menu is not None or self.asleep or self.tt is not None:
+            return
+        self.open_panel("details", (item, det, runtime, chan))
+
     def open_details(self):
+        if self.guide is not None:
+            if self.guide["mode"] == "grid":
+                self.open_guide_details()
+            return
         r = self.cur
         if not r or r["entry"]["type"] != "video" or not self.bundle:
             self.toast(osd.toast_text("NO SHOW TO DESCRIBE RIGHT NOW"))
@@ -974,6 +1154,333 @@ class TV:
         if key != self.key or self.guide is not None or self.menu is not None or self.asleep:
             return
         self.open_panel("details", (item, det, runtime))
+
+    # ---- teletext (see teletext.py for the look, ttpages.py for the pages) ----
+    def open_teletext(self, number=None):
+        if self.guide is not None:
+            self.close_guide()
+        if self.panel is not None:
+            self.close_panel()
+        if self.menu is not None:
+            self.close_menu()
+        if self.tt is None:
+            self.tt = {"page": 100, "sub": 0, "entry": "", "entry_at": 0, "hold": False, "sub_at": time.time(),
+                       "cache": {}, "pending": set(), "shown": None, "hdr": None, "refresh_at": 0,
+                       "status": "", "status_until": 0}
+            for ov in (OVL_BAR, OVL_SCREEN, OVL_DIGITS):
+                self.mpv.overlay(ov, "")
+            self.screen_key, self.digits = None, ""
+            if self.tt_jobs is None:
+                self.tt_jobs = queue.Queue()
+                threading.Thread(target=self._tt_worker, daemon=True, name="teletext").start()
+        self.tt_goto(number if number is not None else self.tt["page"])
+
+    def close_teletext(self):
+        self.tt = None
+        self.update_text_mode()
+        self.mpv.overlay(OVL_TT, "")
+        self.mpv.overlay(OVL_TT_HDR, "")
+        S.forget(keep_channel=self.chan["id"], keep_recent=self.cfg.get("guide_cache_channels", 8))
+        self.src._gbundles.clear()               # pages may have loaded schedules for many channels
+        self.screen_key, self.bar_second, self.load_tick = None, None, None
+        self.draw_loading(force=True)
+
+    def _tt_worker(self):
+        """Builds one page at a time off the main loop: pages fetch manifests, details and feeds."""
+        while True:
+            n = self.tt_jobs.get()
+            self.q.put(("tt", (n, self.tt_pages.build(n))))
+
+    def tt_goto(self, number):
+        t, now = self.tt, time.time()
+        number = max(100, min(999, number))
+        t.update(page=number, sub=0, entry="", hold=False, sub_at=now, refresh_at=now)
+        cached = t["cache"].get(number)
+        if self.tt_pages.is_sync(number):
+            t["shown"] = self.tt_pages.build(number)
+        elif cached and now - cached[0] < TT_CACHE_S:
+            t["shown"] = cached[1]
+        else:
+            t["shown"] = teletext.Page.message(number, "SEARCHING", "{c}Waiting for page %d..." % number,
+                                               links=ttpages.LINKS)
+            if number not in t["pending"]:
+                t["pending"].add(number)
+                self.tt_jobs.put(number)
+        self.tt_draw(force=True)
+        self.update_text_mode()
+
+    def on_tt(self, number, page):
+        t = self.tt
+        if t is None:
+            return
+        t["pending"].discard(number)
+        t["cache"][number] = (time.time(), page)
+        if t["page"] == number:
+            t["shown"], t["sub"], t["sub_at"] = page, 0, time.time()
+            self.tt_draw(force=True)
+
+    def tt_status(self, msg, secs=2.0):
+        self.tt["status"], self.tt["status_until"] = msg, time.time() + secs
+        self.tt_draw(force=True)
+
+    def tt_draw(self, force=False):
+        t = self.tt
+        if t is None or t["shown"] is None:
+            return
+        status = t["status"] if time.time() < t["status_until"] else ""
+        self.mpv.overlay(OVL_TT, teletext.render(t["shown"], t["sub"], t["hold"], status))
+        if force:
+            t["hdr"] = None
+        self.tt_header()
+
+    def tt_header(self):
+        t = self.tt
+        text = "P" + t["entry"] + "-" * (3 - len(t["entry"])) if t["entry"] else f"P{t['page']}"
+        now_ms = self.src.now_ms()
+        key = (now_ms // 1000, text)
+        if key != t["hdr"]:
+            t["hdr"] = key
+            self.mpv.overlay(OVL_TT_HDR, teletext.render_header(text, now_ms))
+
+    def update_tt(self, now):
+        """Once a tick: the clock, typed digits timing out, sub-pages turning over, live pages refreshing."""
+        t = self.tt
+        if t is None or t["shown"] is None:
+            return
+        redraw = False
+        if t["entry"] and now - t["entry_at"] > TT_DIGITS_S:
+            t["entry"] = ""
+            t["hdr"] = None
+        if t["status"] and now >= t["status_until"]:
+            t["status"], redraw = "", True
+        page = t["shown"]
+        if page.refresh_s and now - t["refresh_at"] >= page.refresh_s and self.tt_pages.is_sync(t["page"]):
+            t["refresh_at"] = now
+            t["shown"] = page = self.tt_pages.build(t["page"])
+            redraw = True
+        n = len(page.subpages)
+        if n > 1 and page.rotate_s and not t["hold"] and now - t["sub_at"] >= page.rotate_s:
+            t["sub"], t["sub_at"], redraw = (t["sub"] + 1) % n, now, True
+        if redraw:
+            self.tt_draw()
+        else:
+            self.tt_header()
+
+    def tt_command(self, c):
+        t, now = self.tt, time.time()
+        page = t["shown"]
+        if t["page"] == 501 and self.search_key(c):          # the search page uses digits and arrows itself
+            return
+        if c.startswith("digit:"):
+            t["entry"] += c[6:]
+            t["entry_at"] = now
+            if len(t["entry"]) == 3:
+                self.tt_goto(int(t["entry"]))
+            else:
+                t["hdr"] = None
+                self.tt_header()
+            return
+        if c in ("back", "quit"):
+            self.close_teletext()
+        elif c in ("up", "down"):
+            nums = self.tt_pages.numbers()
+            cur = t["page"]
+            if c == "up":
+                self.tt_goto(next((x for x in nums if x > cur), nums[0]))
+            else:
+                self.tt_goto(next((x for x in reversed(nums) if x < cur), nums[-1]))
+        elif c in ("left", "right") and page is not None:
+            n = len(page.subpages)
+            t["sub"] = (t["sub"] + (1 if c == "right" else -1)) % n
+            t["hold"], t["sub_at"] = n > 1, now
+            self.tt_draw()
+        elif c == "enter":
+            if page is not None and page.tune:
+                chan = page.tune
+                self.close_teletext()
+                self.tune_to(chan)
+            else:
+                t["cache"].pop(t["page"], None)       # reload this page
+                self.tt_goto(t["page"])
+        elif c.startswith("channel:"):
+            self.close_teletext()
+            self.tune_to(c[8:])
+        else:
+            key = {"red": "r", "last": "r", "green": "g", "guide": "g", "yellow": "y", "info": "y",
+                   "blue": "c", "cyan": "c", "now": "c"}.get(c)
+            action = page.actions.get(key) if page is not None and key else None
+            link = page.links.get(key) if page is not None and key else None
+            if action:
+                self.tt_action(action[0], action[2])
+            elif link:
+                self.tt_goto(link[0])
+
+    def tt_action(self, name, payload):
+        """What a colour key with an action does (see teletext.Page.actions)."""
+        t = self.tt
+        if name == "remind":
+            on = self.toggle_reminder(payload)
+            self.tt_status("REMINDER SET" if on else "REMINDER REMOVED")
+            t["cache"].pop(503, None)
+            t["cache"].pop(t["page"], None)
+            sub = t["sub"]
+            self.tt_goto(t["page"])                  # redraw: the key's label flips between REMIND and NO REMIND
+            t["sub"] = min(sub, len(t["shown"].subpages) - 1)
+            self.tt_draw()
+        elif name == "clear_reminders":
+            self.reminders.clear()
+            self._remember_reminders()
+            t["cache"].pop(503, None)
+            self.tt_goto(503)
+            self.tt_status("REMINDERS CLEARED")
+        elif name == "kbd_delete":
+            self.search_key("backspace")
+        elif name == "kbd_go":
+            self.run_search()
+        elif name == "kbd_clear":
+            self.search["query"] = ""
+            self.tt_refresh()
+
+    # ---- teletext search: an on-screen keyboard that works from a remote, plus real typing ----
+    SEARCH_KEYS = ([[(c, c) for c in "ABCDEFGHIJ"], [(c, c) for c in "KLMNOPQRST"], [(c, c) for c in "UVWXYZ0123"]] +
+                   [[(c, c) for c in "456789"] + [("SPC", " "), ("DEL", "\b"), ("GO", "\n")]])
+
+    def search_index(self):
+        if self._search_index is None:
+            self._search_index = searchmod.Index(self.src)
+        return self._search_index
+
+    def tt_refresh(self):
+        """Rebuild the page on screen (it is cheap and built here) and draw it, keeping the sub-page."""
+        t = self.tt
+        t["shown"] = self.tt_pages.build(t["page"])
+        self.tt_draw()
+
+    def search_key(self, c):
+        """Keys on the search page. Returns True when it used the key (others fall through to the usual page keys)."""
+        s, rows = self.search, self.SEARCH_KEYS
+        r, col = s["cur"]
+        if c.startswith("digit:"):
+            c = "char:" + c[6:]
+        if c.startswith("char:"):
+            ch = " " if c == "char:space" else c[5:]
+            if ch and len(s["query"]) < searchmod.MAX_QUERY:
+                s["query"] += ch
+            s["cur"] = [len(rows) - 1, len(rows[-1]) - 1]       # typed on a keyboard: ENTER then means "search"
+        elif c == "backspace":
+            s["query"] = s["query"][:-1]
+        elif c == "up":
+            r = (r - 1) % len(rows)
+            s["cur"] = [r, min(col, len(rows[r]) - 1)]
+        elif c == "down":
+            r = (r + 1) % len(rows)
+            s["cur"] = [r, min(col, len(rows[r]) - 1)]
+        elif c == "left":
+            s["cur"] = [r, (col - 1) % len(rows[r])]
+        elif c == "right":
+            s["cur"] = [r, (col + 1) % len(rows[r])]
+        elif c == "enter":
+            value = rows[r][col][1]
+            if value == "\n":
+                self.run_search()
+                return True
+            if value == "\b":
+                s["query"] = s["query"][:-1]
+            elif len(s["query"]) < searchmod.MAX_QUERY:
+                s["query"] += value.lower()
+        else:
+            return False
+        self.tt_refresh()
+        return True
+
+    def run_search(self, query=None):
+        s = self.search
+        if query is not None:
+            s["query"] = query.strip()[:searchmod.MAX_QUERY]
+        if not s["query"].strip():
+            self.tt_status("TYPE SOMETHING TO SEARCH FOR")
+            return
+        for n in [502] + list(range(510, 510 + ttpages.RESULT_PAGES)):
+            self.tt["cache"].pop(n, None)
+        s["results"] = []
+        self.tt_goto(502)
+
+    def update_text_mode(self):
+        """While the search page is up, letters and digits are text, not commands: tell the input sources (and mpv's window)."""
+        want = self.tt is not None and self.tt["page"] == 501
+        if want == self.text_mode:
+            return
+        self.text_mode = want
+        inputs.TEXT_MODE = want
+        if self.mpv:
+            for k in "abcdefghijklmnopqrstuvwxyz0123456789":
+                cmd = f"char:{k}" if want else inputs.KEY_BINDINGS.get(k)
+                self.mpv.command("keybind", k, f"script-message tv {cmd}" if cmd else "ignore")
+            self.mpv.command("keybind", "SPACE", "script-message tv char:space" if want else "ignore")
+            self.mpv.command("keybind", "BS", "script-message tv backspace" if want else "ignore")
+
+    # ---- reminders ----
+    def has_reminder(self, cid, start_ms):
+        return any(r["cid"] == cid and r["start_ms"] == start_ms for r in self.reminders)
+
+    def toggle_reminder(self, r):
+        """Set a reminder, or remove it if there already is one for that showing. Returns True when it is now set."""
+        if self.has_reminder(r["cid"], r["start_ms"]):
+            self.reminders = [x for x in self.reminders if not (x["cid"] == r["cid"] and x["start_ms"] == r["start_ms"])]
+            on = False
+        else:
+            self.reminders.append(dict(r))
+            on = True
+        self.reminded.discard((r["cid"], r["start_ms"]))
+        self._remember_reminders()
+        return on
+
+    def _remember_reminders(self):
+        self.store.save(reminders=self.reminders)
+
+    def check_reminders(self, now):
+        """Once a second: a banner two minutes ahead, then (optionally) tune to the channel when the show starts."""
+        if not self.reminders or now - self.reminders_at < 1 or self.asleep:
+            return
+        self.reminders_at = now
+        now_ms = self.src.now_ms()
+        keep = []
+        for r in self.reminders:
+            key = (r["cid"], r["start_ms"])
+            lead = r["start_ms"] - now_ms
+            if lead > 120_000:
+                keep.append(r)
+                continue
+            if lead > 0:
+                keep.append(r)
+                if key not in self.reminded:
+                    self.reminded.add(key)
+                    self.announce(f"COMING UP ON CH {r['dial']}: {osd.short(r['title'], 28)}")
+                continue
+            if lead > -5 * 60_000:                     # it has just started (not long ago, or we were asleep): now is the time
+                if self.cfg.get("reminder_autotune"):
+                    if self.chan["id"] != r["cid"]:
+                        self.close_for_reminder()
+                        self.tune_to(r["cid"])
+                    self.announce(f"NOW: {osd.short(r['title'], 34)}")
+                else:
+                    self.announce(f"STARTING NOW ON CH {r['dial']}: {osd.short(r['title'], 22)}", 10)
+            self.reminded.discard(key)                 # fired (or too old): drop it
+        if len(keep) != len(self.reminders):
+            self.reminders = keep
+            self._remember_reminders()
+
+    def close_for_reminder(self):
+        if self.tt is not None:
+            self.close_teletext()
+        if self.guide is not None:
+            self.close_guide()
+
+    def announce(self, msg, secs=12):
+        """A banner that is visible over the picture, the guide and teletext alike."""
+        self.toast(osd.toast_text(msg), secs)
+        if self.tt is not None:
+            self.tt_status(msg, secs)
 
     # ---- settings menu ----
     def menu_entries(self):
@@ -995,16 +1502,24 @@ class TV:
             ("Static between channels", onoff(self.cfg["noise"] == "lavfi"),
              lambda d: self.set_setting("noise", "none" if self.cfg["noise"] == "lavfi" else "lavfi")),
             ("Station-break slides", onoff(self.cfg["bumps"]), lambda d: self.set_setting("bumps", not self.cfg["bumps"])),
+            ("Only favourite channels", onoff(self.cfg.get("favourites_only")), lambda d: self.favourite_command("favs_only")),
+            ("This channel", "favourite" if self.chan["id"] in self.favs else "hidden" if self.chan["id"] in self.hidden else "normal",
+             # normal -> favourite -> hidden -> normal
+             lambda d: self.favourite_command("favourite" if self.chan["id"] not in self.favs and self.chan["id"] not in self.hidden else "hide")),
             ("Black & white", onoff(mono), lambda d: self.set_mono(not mono)),
             ("Sleep timer", f"{mins} min" if mins else "off", lambda d: self.step_sleep(d)),
+            ("Audio output", self.audio_label(), lambda d: self.step_audio(d)),
         ]
 
     def open_menu(self):
+        if self.tt is not None:
+            self.close_teletext()
         if self.guide is not None:
             self.close_guide()
         if self.panel is not None:
             self.close_panel()
         self.menu = {"sel": 0}
+        self.refresh_audio_devices()
         self.mpv.overlay(OVL_BAR, "")
         self.mpv.overlay(OVL_SCREEN, "")
         self.screen_key = None
@@ -1048,6 +1563,32 @@ class TV:
         if self.guide is not None:
             self.draw_guide()
 
+    # ---- audio output ----
+    def refresh_audio_devices(self):
+        """Ask mpv which outputs exist and which one is in use (once per menu opening; it answers in milliseconds)."""
+        try:
+            devs = self.mpv.request("get_property", "audio-device-list", timeout=0.5) or []
+            cur = self.mpv.request("get_property", "audio-device", timeout=0.5)
+        except Exception:
+            devs, cur = [], None
+        self.audio = {"list": [(d.get("name"), d.get("description") or d.get("name")) for d in devs if d.get("name")], "cur": cur}
+
+    def audio_label(self):
+        names = dict(self.audio["list"])
+        cur = self.audio["cur"]
+        return osd.short(names.get(cur) or cur or "not available", 26) if self.audio["list"] else "not available"
+
+    def step_audio(self, d):
+        devs = self.audio["list"]
+        if not devs:
+            return
+        i = next((k for k, (name, _) in enumerate(devs) if name == self.audio["cur"]), -1)
+        name, desc = devs[(i + (1 if d >= 0 else -1)) % len(devs)]
+        self.mpv.command("set_property", "audio-device", name)
+        self.audio["cur"] = name
+        self.set_setting("audio_device", name)          # kept for the next start (overrides the profile's choice)
+        log.info("audio output: %s", name)
+
     # ---- sleep timer ----
     def sleep_minutes(self):
         return max(1, round((self.sleep_at - time.time()) / 60)) if self.sleep_at else 0
@@ -1066,9 +1607,10 @@ class TV:
 
     def go_to_sleep(self):
         self.asleep, self.sleep_at, self.sleep_warned = True, None, False
-        self.guide, self.menu, self.panel = None, None, None
+        self.guide, self.menu, self.panel, self.tt = None, None, None, None
+        self.update_text_mode()
         self.loading, self.expect_url, self.digits = None, None, ""
-        for ov in (OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_MENU):
+        for ov in (OVL_BAR, OVL_SCREEN, OVL_DIGITS, OVL_GUIDE, OVL_TOAST, OVL_DIAG, OVL_MENU, OVL_TT, OVL_TT_HDR):
             self.mpv.overlay(ov, "")
         self.play_black(12 * 3600)                    # stops streaming from archive.org
         self.mpv.overlay(OVL_PANEL, osd.goodnight_card())
@@ -1286,6 +1828,7 @@ def create(argv=None):
     ap.add_argument("--profile")
     ap.add_argument("--channel", help="dial number or channel id")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--doctor", action="store_true", help="check mpv, network, audio, keyboard ... and say how to fix problems")
     ap.add_argument("--fs", action="store_true", help="start fullscreen")
     ap.add_argument("--mono", action="store_true", help="black-and-white screen: grayscale video and overlays")
     ap.add_argument("--web", action="store_true", help="start the web remote / JSON API (see webremote.py)")
@@ -1295,10 +1838,14 @@ def create(argv=None):
     ap.add_argument("--mpv-arg", action="append", default=[], metavar="ARG", help="extra mpv option, repeatable")
     a = ap.parse_args(argv)
     cfg = load_config(a.config, a.profile)
+    teletext.set_font(cfg.get("teletext_font"))
+    if a.doctor:
+        import doctor
+        sys.exit(doctor.run(cfg))
     setup_logging(cfg["cache_dir"])
     log.info("start: profile=%s", cfg["profile"])
     saved_settings = Store(cfg["cache_dir"]).load().get("settings", {}) if cfg.get("remember", True) else {}
-    for key in ("bar_seconds", "noise", "bumps"):         # things changed in the settings menu stay changed
+    for key in ("bar_seconds", "noise", "bumps", "favourites_only"):         # things changed in the settings menu stay changed
         if key in saved_settings:
             cfg[key] = saved_settings[key]
     if "mono" in saved_settings and not a.mono:
@@ -1322,6 +1869,8 @@ def create(argv=None):
         idx = next((i for i, c in enumerate(chans) if str(c["dial"]) == str(cfg["start_channel"])), 0)
     if idx is None:
         sys.exit(f"unknown channel {want!r}; try --list")
+    if saved_settings.get("audio_device") and not any(x.startswith("--audio-device") for x in a.mpv_arg):
+        cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + [f"--audio-device={saved_settings['audio_device']}"]   # picked in the menu
     if cfg.get("remember", True):               # mpv ignores `set volume` while idle, so pass them as start-up options
         extra = []
         if isinstance(saved.get("volume"), (int, float)):

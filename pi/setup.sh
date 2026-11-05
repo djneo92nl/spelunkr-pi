@@ -5,9 +5,9 @@ set -e
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo"; exit 1; }
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 apt-get update
-apt-get install -y mpv python3 ca-certificates cec-utils
+apt-get install -y mpv python3 ca-certificates cec-utils fonts-dejavu-core     # the font keeps the teletext columns lined up
 mkdir -p /opt/spelunkr-tv
-cp "$HERE"/tv.py "$HERE"/schedule.py "$HERE"/osd.py "$HERE"/mpvctl.py "$HERE"/inputs.py "$HERE"/webremote.py "$HERE"/subs.py "$HERE"/prefetch.py "$HERE"/config.json /opt/spelunkr-tv/
+cp "$HERE"/tv.py "$HERE"/schedule.py "$HERE"/osd.py "$HERE"/mpvctl.py "$HERE"/inputs.py "$HERE"/webremote.py "$HERE"/subs.py "$HERE"/prefetch.py "$HERE"/feeds.py "$HERE"/teletext.py "$HERE"/ttpages.py "$HERE"/search.py "$HERE"/doctor.py "$HERE"/config.json /opt/spelunkr-tv/
 chown -R pi:pi /opt/spelunkr-tv
 install -m 644 "$HERE"/pi/spelunkr-tv.service /etc/systemd/system/spelunkr-tv.service
 systemctl daemon-reload

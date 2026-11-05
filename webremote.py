@@ -5,6 +5,10 @@
     GET  /api/channels           channel list
     POST /api/channel/<dial|id>  tune, e.g. /api/channel/203 or /api/channel/ray-gun
     POST /api/key/<name>         up down last info guide fullscreen mute volup voldown left right enter captions diag help testcard now details menu sleep
+                                 text red green yellow blue (teletext and its colour keys)
+                                 favourite hide favs_only (mark the current channel; surf only favourites)
+    POST /api/page/<100-999>     open that teletext page
+    POST /api/search/<words>     search every channel for a show (opens the teletext results)
     POST /api/volume/<up|down|mute>
     POST /api/sleep/<minutes>    sleep timer, 0 = off
 
@@ -20,7 +24,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 KEYS = {"up", "down", "last", "info", "guide", "fullscreen", "mute", "volup", "voldown", "left", "right", "enter",
-        "captions", "diag", "help", "testcard", "now", "details", "menu", "sleep", "bar"}
+        "captions", "diag", "help", "testcard", "now", "details", "menu", "sleep", "bar", "text", "red", "green", "yellow", "blue", "favourite", "hide", "favs_only"}
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -45,6 +49,10 @@ button{font:inherit;color:var(--ink);background:var(--card);border:1px solid var
   min-height:48px;cursor:pointer}
 button:active{background:var(--line)}
 button.big{font-size:22px}
+.find{display:flex;gap:10px;margin:14px 0}
+.find input{flex:1;min-width:0;font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+.fast{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
+.fast button{border-bottom:5px solid var(--f);padding:10px 4px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .grid button{display:flex;gap:8px;align-items:center;text-align:left;padding:10px 12px;min-height:44px;font-size:14px}
 .grid b{min-width:2.4em;color:var(--c,#4caf50);font-variant-numeric:tabular-nums}
@@ -60,6 +68,10 @@ button.big{font-size:22px}
 <div class="row"><button data-k="voldown">Vol −</button><button data-k="mute" id="mute">Mute</button><button data-k="volup">Vol +</button></div>
 <div class="row"><button data-k="guide">Guide</button><button data-k="now">On now</button><button data-k="info">Info</button></div>
 <div class="row"><button data-k="captions">Captions</button><button data-k="sleep">Sleep</button><button data-k="menu">Settings</button></div>
+<div class="row"><button data-k="text">Teletext</button><button data-k="up">Page +</button><button data-k="down">Page −</button></div>
+<div class="row"><button data-k="favourite">★ Favourite</button><button data-k="hide">Hide</button><button data-k="favs_only">Favs only</button></div>
+<form class="find" id="find"><input id="q" type="search" placeholder="Search every channel…" autocomplete="off" enterkeyhint="search" maxlength="40"><button>Search</button></form>
+<div class="fast"><button data-k="red" style="--f:#e53935">Red</button><button data-k="green" style="--f:#43a047">Green</button><button data-k="yellow" style="--f:#fdd835">Yellow</button><button data-k="blue" style="--f:#00acc1">Cyan</button></div>
 <div id="err"></div>
 <h1 style="margin-top:18px">Channels</h1><div class="grid" id="chans"></div>
 <script>
@@ -73,7 +85,8 @@ const fmt=s=>{s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floo
   return (h?h+':'+String(m).padStart(2,'0'):m)+':'+String(r).padStart(2,'0')};
 const clock=ms=>new Date(ms).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
 async function post(p){try{const r=await fetch('/api/'+p,{method:'POST',headers:H});if(!r.ok)throw new Error(r.status);
-  $('err').textContent='';setTimeout(poll,300)}catch(e){$('err').textContent='Could not reach the TV ('+e.message+')'}}
+  $('err').textContent='';setTimeout(poll,300);if(/^key\/(favourite|hide)/.test(p))setTimeout(loadChans,500)}catch(e){$('err').textContent='Could not reach the TV ('+e.message+')'}}
+$('find').onsubmit=e=>{e.preventDefault();const v=$('q').value.trim();if(v){post('search/'+encodeURIComponent(v));$('q').blur()}};
 document.querySelectorAll('[data-k]').forEach(b=>b.onclick=()=>post('key/'+b.dataset.k));
 async function poll(){try{const r=await fetch('/api/status'+q,{headers:H});if(!r.ok)throw new Error(r.status);const s=await r.json();
   $('err').textContent='';const c=s.channel||{};document.documentElement.style.setProperty('--ch',lift(c.color));
@@ -85,11 +98,11 @@ async function poll(){try{const r=await fetch('/api/status'+q,{headers:H});if(!r
   $('mute').textContent=s.muted?'Unmute':'Mute';
   document.querySelectorAll('#chans button').forEach(b=>b.classList.toggle('on',b.dataset.id===c.id));
  }catch(e){$('err').textContent='Lost contact with the TV ('+e.message+')'}}
-async function init(){try{const r=await fetch('/api/channels'+q,{headers:H});const list=await r.json();const g=$('chans');
+async function loadChans(){try{const r=await fetch('/api/channels'+q,{headers:H});const list=await r.json();const g=$('chans');g.textContent='';
   list.forEach(c=>{const b=document.createElement('button');b.dataset.id=c.id;b.style.setProperty('--c',lift(c.color));
-    b.innerHTML='<b></b><span></span>';b.firstChild.textContent=c.dial;b.lastChild.textContent=c.name;
-    b.onclick=()=>post('channel/'+c.id);g.appendChild(b)})}catch(e){$('err').textContent='Could not load channels'}
-  poll();setInterval(poll,2000)}
+    b.innerHTML='<b></b><span></span>';b.firstChild.textContent=c.dial;b.lastChild.textContent=(c.favourite?'★ ':'')+c.name;
+    if(c.hidden)b.style.opacity='.5';b.onclick=()=>post('channel/'+c.id);g.appendChild(b)})}catch(e){$('err').textContent='Could not load channels'}}
+async function init(){await loadChans();poll();setInterval(poll,2000)}
 init();
 </script></body></html>
 """
@@ -145,8 +158,9 @@ def start(tv, host="0.0.0.0", port=8080, token=""):
             elif u.path == "/api/status":
                 self._json(dict(tv.snapshot))
             elif u.path == "/api/channels":
-                self._json([{"dial": c["dial"], "id": c["id"], "name": c["name"], "color": c.get("color")}
-                            for c in tv.chans])
+                favs, hidden = getattr(tv, "favs", ()), getattr(tv, "hidden", ())
+                self._json([{"dial": c["dial"], "id": c["id"], "name": c["name"], "color": c.get("color"),
+                             "favourite": c["id"] in favs, "hidden": c["id"] in hidden} for c in tv.chans])
             else:
                 self._json({"ok": False, "error": "not found"}, 404)
 
@@ -164,6 +178,10 @@ def start(tv, host="0.0.0.0", port=8080, token=""):
                 tv.send("channel:" + parts[2])
             elif len(parts) == 3 and parts[:2] == ["api", "key"] and parts[2] in KEYS:
                 tv.send(parts[2])
+            elif len(parts) == 3 and parts[:2] == ["api", "page"] and parts[2].isdigit() and 100 <= int(parts[2]) <= 999:
+                tv.send("page:" + parts[2])
+            elif len(parts) == 3 and parts[:2] == ["api", "search"] and parts[2].strip():
+                tv.send("search:" + parts[2].strip()[:40])
             elif len(parts) == 3 and parts[:2] == ["api", "volume"] and parts[2] in ("up", "down", "mute"):
                 tv.send({"up": "volup", "down": "voldown", "mute": "mute"}[parts[2]])
             elif len(parts) == 3 and parts[:2] == ["api", "sleep"]:

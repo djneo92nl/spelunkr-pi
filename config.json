@@ -344,5 +344,8 @@
   "splash_seconds": 2.5,
   "sleep_action": "blank",
   "evdev": true,
-  "guide_cache_channels": 8
+  "guide_cache_channels": 8,
+  "favourites_only": false,
+  "reminder_autotune": false,
+  "feeds": []
 }

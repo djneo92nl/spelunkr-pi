@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Python port of spelunkr.tv's synchronized schedule (engine 5, no ad breaks yet).
+"""Python port of spelunkr.tv's synchronized schedule (engine 5, including ad breaks).
 
 Library:  now_playing(channel_lineup, manifests, platform, t_ms)
 CLI:      python3 schedule.py computer-chronicles [--at ISO8601] [--no-clock-sync]
 
 Ported from the site bundle (functions c0/Ua/ja/y0/b0/on/uo and the PRNG helpers).
-Channels with ad breaks ("ads" in the manifest) raise NotImplementedError.
+Channels with ad breaks ("ads" in the manifest) are scheduled too; timeline(..., breaks=True) lists the gaps as cells.
 """
 import argparse
 import datetime
@@ -521,15 +521,27 @@ def now_playing(channel, manifests, platforms, t_ms):
             "start_ms": start, "end_ms": end, "remaining_s": (end - t_ms) / 1000}
 
 
-def timeline(channel, manifests, platforms, t0_ms, t1_ms):
-    """Shows on air between t0 and t1 (the one already playing at t0 included): [{start_ms, end_ms, item}]."""
+def timeline(channel, manifests, platforms, t0_ms, t1_ms, breaks=False):
+    """Shows on air between t0 and t1 (the one already playing at t0 included):
+    [{start_ms, end_ms, item, version, videoIndex}] (the last two locate the show's entry in the details file).
+    With breaks=True the gaps between shows come as cells of their own, {start_ms, end_ms, kind: "ad" | "break"} with no
+    "item" (station-break slides, commercials); a break that is already running at t0 starts before it."""
     out, t = [], t0_ms
     for _ in range(600):
         if t >= t1_ms:
             break
         r = now_playing(channel, manifests, platforms, t)
         if r["entry"]["type"] == "video":
-            out.append({"start_ms": r["start_ms"], "end_ms": r["end_ms"], "item": r["entry"]["item"]})
+            out.append({"start_ms": r["start_ms"], "end_ms": r["end_ms"], "item": r["entry"]["item"],
+                        "version": r["version"], "videoIndex": r["entry"].get("videoIndex")})
+        elif breaks:
+            kind = "ad" if r["entry"]["type"] == "ad" else "break"
+            if out and "item" not in out[-1] and r["start_ms"] - out[-1]["end_ms"] <= 2:
+                out[-1]["end_ms"] = r["end_ms"]                      # one cell for a whole run of slides and commercials
+                if kind == "ad":
+                    out[-1]["kind"] = "ad"
+            else:
+                out.append({"start_ms": r["start_ms"], "end_ms": r["end_ms"], "kind": kind})
         t = int(r["end_ms"]) + 1
     return out
 

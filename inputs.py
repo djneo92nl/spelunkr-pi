@@ -1,7 +1,10 @@
 """Input sources. Each source pushes command strings onto a queue; the TV loop never cares where they came from.
 
 Commands: up, down, left, right, last, info, guide, fullscreen, mute, volup, voldown, wheel_up, wheel_down,
-          click, channel:<dial|id>, diag, help, captions, testcard, now, details, menu, sleep, bar, back, quit, enter, digit:<0-9>
+          click, channel:<dial|id>, diag, help, captions, testcard, now, details, menu, sleep, bar, back, quit, enter, digit:<0-9>,
+          text (teletext), page:<100-999>, red, green, yellow, blue (teletext colour keys),
+          favourite, hide, favs_only (favourite / hide the current channel, only surf favourites),
+          search:<words> (open the teletext search), char:<c> / backspace (only while the search page is open: see TEXT_MODE)
 
 To add GPIO buttons or a USB remote later, write another class with start(put) / stop() and add it in tv.py:
 
@@ -22,13 +25,18 @@ import threading
 KEY_BINDINGS = {"UP": "up", "DOWN": "down", "PGUP": "up", "PGDWN": "down", "+": "up", "-": "down",
                 "LEFT": "left", "RIGHT": "right", "ENTER": "enter", "i": "info", "g": "guide", "l": "last", "q": "quit", "f": "fullscreen", "MBTN_LEFT_DBL": "fullscreen", "MBTN_LEFT": "click",
                 "m": "mute", "[": "voldown", "]": "volup", "d": "diag", "?": "help", "h": "help", "c": "captions", "t": "testcard",
-                "n": "now", "s": "menu", "z": "sleep", "WHEEL_UP": "wheel_up", "WHEEL_DOWN": "wheel_down",
+                "n": "now", "s": "menu", "z": "sleep", "x": "text", "r": "red", "y": "yellow", "b": "blue", "a": "favourite", "o": "hide", "e": "details", "WHEEL_UP": "wheel_up", "WHEEL_DOWN": "wheel_down",
                 "NEXT": "up", "PREV": "down", "PLAYPAUSE": "mute",
                 **{str(d): f"digit:{d}" for d in range(10)}}
 
+TEXT_MODE = False        # True while the search page wants letters: keys then arrive as "char:<c>", "backspace" and "enter"
+_EVDEV_CHARS = {2: "1", 3: "2", 4: "3", 5: "4", 6: "5", 7: "6", 8: "7", 9: "8", 10: "9", 11: "0",
+                16: "q", 17: "w", 18: "e", 19: "r", 20: "t", 21: "y", 22: "u", 23: "i", 24: "o", 25: "p",
+                30: "a", 31: "s", 32: "d", 33: "f", 34: "g", 35: "h", 36: "j", 37: "k", 38: "l",
+                44: "z", 45: "x", 46: "c", 47: "v", 48: "b", 49: "n", 50: "m", 57: "space"}
 _CHAR_KEYS = {"+": "up", "=": "up", "-": "down", "_": "down", "k": "up", "j": "down", "i": "info",
               "g": "guide", "l": "last", "q": "quit", "f": "fullscreen", "m": "mute", "[": "voldown", "]": "volup", "d": "diag", "?": "help", "h": "help", "c": "captions",
-              "t": "testcard", "n": "now", "s": "menu", "z": "sleep", "\r": "enter", "\n": "enter",
+              "t": "testcard", "n": "now", "s": "menu", "z": "sleep", "x": "text", "r": "red", "y": "yellow", "b": "blue", "a": "favourite", "o": "hide", "e": "details", "\r": "enter", "\n": "enter",
               **{str(d): f"digit:{d}" for d in range(10)}}
 _ESC_KEYS = {"[A": "up", "[B": "down", "[C": "right", "[D": "left", "OC": "right", "OD": "left", "[5~": "up", "[6~": "down", "OA": "up", "OB": "down"}
 
@@ -59,7 +67,11 @@ class KeyboardInput:
             if not data:
                 return
             s = data.decode("ascii", "ignore")
-            if s.startswith("\x1b"):
+            if TEXT_MODE and s and not s.startswith("\x1b"):
+                ch = s[0]
+                cmd = ("enter" if ch in "\r\n" else "backspace" if ch in "\x7f\b" else "char:space" if ch == " "
+                       else "char:" + ch.lower() if ch.isalnum() else None)
+            elif s.startswith("\x1b"):
                 cmd = _ESC_KEYS.get(s[1:])
             else:
                 cmd = _CHAR_KEYS.get(s[:1])
@@ -180,6 +192,7 @@ KEY = {1: "back", 16: "quit", 28: "enter", 96: "enter", 103: "up", 108: "down", 
        26: "voldown", 27: "volup", 114: "voldown", 115: "volup", 113: "mute", 50: "mute",
        34: "guide", 23: "info", 358: "info", 365: "guide", 49: "now", 31: "menu", 139: "menu", 44: "sleep",
        46: "captions", 32: "diag", 20: "testcard", 38: "last", 35: "help", 53: "help", 33: "fullscreen",
+       45: "text", 19: "red", 21: "yellow", 48: "blue", 30: "favourite", 24: "hide", 18: "details",
        2: "digit:1", 3: "digit:2", 4: "digit:3", 5: "digit:4", 6: "digit:5", 7: "digit:6", 8: "digit:7",
        9: "digit:8", 10: "digit:9", 11: "digit:0",
        79: "digit:1", 80: "digit:2", 81: "digit:3", 75: "digit:4", 76: "digit:5", 77: "digit:6",
@@ -282,7 +295,12 @@ class EvdevInput:
                             pass
                         continue
                     for code, value in parse_events(buf):
-                        cmd = KEY.get(code)
+                        if TEXT_MODE and code in _EVDEV_CHARS:
+                            cmd = "char:" + _EVDEV_CHARS[code]
+                        elif TEXT_MODE and code == 14:
+                            cmd = "backspace"
+                        else:
+                            cmd = KEY.get(code)
                         if cmd and (value == 1 or (value == 2 and cmd in _AUTOREPEAT_OK)):
                             put(cmd)
         finally:

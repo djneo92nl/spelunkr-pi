@@ -68,6 +68,11 @@ def year_suffix(it):
     return f"  ({y})" if y and str(y) not in it.get("title", "") else ""
 
 
+def _marked(chan, n):
+    """Channel name for the guide lists: a star in front of a favourite."""
+    return ("\u2605 " if chan.get("fav") else "") + chan["name"][:n]
+
+
 def short(s, n):
     s = esc(s)
     return s if len(s) <= n else s[: n - 1] + "…"
@@ -84,14 +89,15 @@ def info_bar(chan, r, upcoming, now_ms, sleep_s=None):
              rect(x0, top, x0 + 8, H - SAFE_Y, color)]
     dial = chan.get("dial")
     lines.append(text(x0 + 22, top + 8, f"CH {dial:>3}" if dial is not None else "CH --", 40, color))
-    lines.append(text(x0 + 178, top + 14, short(chan["name"].upper(), 24), 30))
+    lines.append(text(x0 + 178, top + 14, short(("\u2605 " if chan.get("fav") else "") + chan["name"].upper(), 24), 30))
     lines.append(text(x1 - 14, top + 14, clock(now_ms), 30, an=9))
     if sleep_s:
         lines.append(text(x1 - 14, top + 52, f"SLEEP {mmss(sleep_s)}", 18, "&H80C0FF&", an=9, border=1))
 
     if e["type"] == "video":
         it = e["item"]
-        lines.append(text(x0 + 22, top + 56, short(it["title"], 44) + year_suffix(it), 26))
+        mature = "{\\fs16\\1c&H4040FF&}  MATURE" if it.get("mature") else ""     # the site flags some shows
+        lines.append(text(x0 + 22, top + 56, short(it["title"], 36 if mature else 44) + year_suffix(it) + mature, 26))
         total = e["durMs"] / 1000
         frac = min(1.0, max(0.0, r["offset_s"] / total)) if total else 0
         bx0, bx1, by = x0 + 22, x1 - 14, top + 92
@@ -224,8 +230,9 @@ def _x(t_ms, t0_ms):
     return int(_GX0 + (t_ms - t0_ms) / GUIDE_SPAN_MS * (_GX1 - _GX0))
 
 
-def guide(rows, sel, first, t0_ms, now_ms):
-    """rows: [{chan, programs: list | None (loading) | 'error'}] for the visible slice, rows[sel-first] is selected.
+def guide(rows, sel, first, t0_ms, now_ms, desc=None):
+    """rows: [{chan, programs: list | None (loading) | 'error', breaks: [{start_ms, end_ms, kind}] (optional)}] for the
+    visible slice, rows[sel-first] is selected. desc: the selected show's description, once it has been fetched.
     Returns the ASS for a full-screen opaque guide."""
     lines = [rect(0, 0, W, H, "&H180C04&"),
              text(SAFE_X, SAFE_Y - 6, "SPELUNKR TV GUIDE", 30, "&H40D0FF&"),
@@ -244,12 +251,20 @@ def guide(rows, sel, first, t0_ms, now_ms):
         if selected:
             lines.append(rect(SAFE_X - 4, y, _GX1, y + _ROW_H - 2, "&H603018&", alpha="60"))
         lines.append(text(SAFE_X, y + 8, f"{chan['dial']:>3}", 24, col, border=1))
-        lines.append(text(SAFE_X + 50, y + 13, short(chan["name"], 12).upper(), 16, border=1))
+        lines.append(text(SAFE_X + 50, y + 13, short(_marked(chan, 12), 13).upper(), 16, "&H808080&" if chan.get("hidden") else "&HFFFFFF&", border=1))
         progs = row["programs"]
         if progs is None or progs == "error":
             lines.append(text(_GX0 + 8, y + 12, "loading..." if progs is None else "unavailable", 18,
                               "&H808080&", border=1))
             continue
+        for b in row.get("breaks") or []:                  # commercials and station-break slides between the shows
+            bx0, bx1 = _x(max(b["start_ms"], t0_ms), t0_ms), _x(min(b["end_ms"], t0_ms + GUIDE_SPAN_MS), t0_ms)
+            if bx1 - bx0 < 3:
+                continue
+            ad = b.get("kind") == "ad"
+            lines.append(rect(bx0 + 1, y + 3, bx1 - 1, y + _ROW_H - 5, "&H104060&" if ad else "&H301808&"))
+            if bx1 - bx0 >= 44:
+                lines.append(text(bx0 + 5, y + 15, "ADS" if ad else "BREAK", 14, "&H80C0E0&" if ad else "&H909090&", bold=False, border=0))
         for k, p in enumerate(progs):
             cs, ce = max(p["start_ms"], t0_ms), min(p["end_ms"], t0_ms + GUIDE_SPAN_MS)
             x0, x1 = _x(cs, t0_ms), _x(ce, t0_ms)
@@ -267,8 +282,12 @@ def guide(rows, sel, first, t0_ms, now_ms):
     if cur and isinstance(cur["programs"], list) and cur["programs"]:
         p = cur["programs"][0]
         lines.append(text(SAFE_X, fy, short(p["item"]["title"], 48) + year_suffix(p["item"]), 22))
-        lines.append(text(SAFE_X, fy + 30, f"{clock(p['start_ms'])} - {clock(p['end_ms'])}   "
-                          f"CH {cur['chan']['dial']} {esc(cur['chan']['name'])}", 18, "&HC0C0C0&", border=1))
+        if desc:
+            lines.append(text(SAFE_X, fy + 31, f"{clock(p['start_ms'])}-{clock(p['end_ms'])}  " + short(desc, 62),
+                              16, "&HC0C0C0&", bold=False, border=1))
+        else:
+            lines.append(text(SAFE_X, fy + 30, f"{clock(p['start_ms'])} - {clock(p['end_ms'])}   "
+                              f"CH {cur['chan']['dial']} {esc(cur['chan']['name'])}", 18, "&HC0C0C0&", border=1))
     lines.append(text(W // 2, H - SAFE_Y + 8, "UP/DOWN channel   LEFT/RIGHT time   ENTER watch   G close",
                       16, "&H909090&", an=2, border=0))
     return "\n".join(lines)
@@ -331,10 +350,10 @@ def diag_panel(lines):
 
 HELP_KEYS = [
     ("UP / DOWN", "channel up / down"), ("0-9, ENTER", "jump to a channel"), ("L", "last channel"),
-    ("I", "info bar; again = details"), ("G", "TV guide"), ("N", "what is on now"),
+    ("I", "info bar; again = details"), ("E", "show details"), ("G", "TV guide"), ("N", "what is on now"),
     ("C", "captions on / off"), ("S", "settings"), ("Z", "sleep timer"),
     ("M, [ , ]", "mute, volume"), ("D", "diagnostics"), ("T", "test card"),
-    ("F", "fullscreen"), ("? / H", "this screen"), ("Q", "quit"),
+    ("F", "fullscreen"), ("A / O", "favourite / hide channel"), ("X", "teletext; R G Y B links"), ("? / H", "this screen"), ("Q", "quit"),
 ]
 
 
@@ -381,7 +400,7 @@ def now_list(rows, sel, first, now_ms):
         if selected:
             out.append(rect(SAFE_X - 6, y, W - SAFE_X + 6, y + _NOW_RH - 3, "&H603018&", alpha="60"))
         out.append(text(SAFE_X, y + 8, f"{chan['dial']:>3}", 24, rgb(chan.get("color")), border=1))
-        out.append(text(SAFE_X + 52, y + 14, short(chan["name"], 13).upper(), 14, border=1))
+        out.append(text(SAFE_X + 52, y + 14, short(_marked(chan, 13), 14).upper(), 14, "&H808080&" if chan.get("hidden") else "&HFFFFFF&", border=1))
         progs = row["programs"]
         x = SAFE_X + 190
         chars = max(10, int((W - SAFE_X - 150 - x) / 10.5))
@@ -430,6 +449,10 @@ def details_screen(chan, item, det, runtime_s):
             v = ", ".join(v) if isinstance(v, list) else v
             out.append(text(SAFE_X, y, f"{label}: {short(v, chars - len(label) - 2)}", 18, "&HC0C0C0&", bold=False, border=1))
             y += 26
+    if det.get("imdbId"):
+        out.append(text(SAFE_X, y, f"imdb.com/title/{esc(det['imdbId'])}", 18, "&HC0C0C0&", bold=False, border=1))
+    if item.get("mature"):
+        out.append(text(W - SAFE_X, SAFE_Y - 2, "MATURE", 22, "&H4040FF&", an=9, border=1))
     out.append(text(SAFE_X, H - SAFE_Y - 6, f"archive.org/details/{esc(item['id'])}"[:70], 15, "&H808080&", bold=False, border=0))
     out.append(text(W - SAFE_X, H - SAFE_Y - 6, "any key closes", 15, "&H808080&", an=9, border=0))
     return "\n".join(out)

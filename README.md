@@ -84,9 +84,35 @@ Open `https://spelunkr.tv/<channel-id>` next to it and compare. Expect about ±1
 * **Boot splash**: the pixel TV and "TUNING IN..." for a couple of seconds at start (`"splash_seconds": 0` skips it).
 * **On now** (`n`): every channel with what it is showing, when that ends and what is next; `up`/`down` pick, `Enter` tunes,
   `g` switches to the time grid, `n` closes. Rows load in the background like the guide.
-* **Show details** (`i` twice): title, year, runtime, season/episode and the site's own description for the show on air.
+* **Show details** (`i` twice, or `e`): title, year, runtime, season/episode, the site's own description, the IMDb id and a MATURE flag for the show on air.
+  In the guide, `e` opens the details of the show selected there.
+* **Teletext** (`x`): a Ceefax-style service over the picture: 40x25 characters, blocky mono font, coloured headline bands and the
+  red / green / yellow / cyan links along the bottom. Type a three-digit page number, `up`/`down` step through pages, `left`/`right`
+  turn sub-pages (they also turn by themselves, like the real thing, until you press one), `Enter` tunes to the channel a page is about,
+  `r` `g` `y` `b` (or the coloured keys on a TV remote) follow the links, `x` or Esc leaves. Pages: **100** index, **101** now and next,
+  **110** on now (every channel), **200** channels (**2xx** one page each: logo, description, number of programmes, hours of video),
+  **300** listings (**3xx** the next 12 hours of one channel, with the commercial breaks), **400-409** this programme and the next ones
+  (description, season, IMDb id, mature flag), **500** search and reminders, **600** trivia, music credits and station-break lines,
+  **700** news, **800** status, **801** this device, **900** keys. Pages load in the background (the header shows the number while it
+  waits); the news and search pages need the network, the rest work from the cache. It needs a monospace font: Menlo on the Mac,
+  DejaVu Sans Mono elsewhere (`sudo apt install fonts-dejavu-core`, or set `"teletext_font"`).
+* **News** (teletext 700): RSS and Atom feeds from `config.json`: `"feeds": [{"name": "BBC News", "url": "https://feeds.bbci.co.uk/news/rss.xml"}]`
+  (up to nine). Page 70n lists the headlines of feed n, 7n0-7n9 are the stories. Cached for 15 minutes (`feed_refresh_s`), and the last copy
+  is shown if the network is down.
+* **Search** (teletext 501, or the search box on the phone remote): looks through the titles, series names and descriptions of every channel
+  and says which ones are on now or in the next 24 hours. Type on a keyboard, or pick letters with the arrow keys and `Enter` (red deletes,
+  green searches, yellow clears). Results are pages 510-529; `Enter` on one tunes to its channel. Descriptions need the channels' details files
+  (fetched on the first search); without the network, titles still match.
+* **Reminders**: on a programme page (4xx) or a search result press the yellow key. A banner appears two minutes before the show, and again when
+  it starts; `"reminder_autotune": true` switches the TV to the channel at that moment. Reminders live in teletext page 503 and survive restarts.
+* **Favourites and hidden channels**: `a` marks the current channel (or the one selected in the guide) as a favourite, `o` hides it; a
+  second press undoes it. Hidden channels are skipped by channel up/down but still tune by number. Settings has "Only favourite channels"
+  (channel up/down then visit only favourites) and a "This channel" row. Favourites show a star in the guide, the on-now list and the info bar.
+* **Guide extras**: commercials and station breaks are drawn as darker cells between the shows (`ADS` / `BREAK` where there is room),
+  and the footer carries the selected show's description once it has loaded.
 * **Settings** (`s`): volume, captions, how long the info bar stays, static between channels, station-break slides, black and white,
-  sleep timer. `up`/`down` pick, `left`/`right` change. Choices are remembered between runs.
+  sleep timer, only favourite channels, this channel (normal / favourite / hidden) and the audio output (every device mpv can see; the choice is
+  remembered and overrides the profile's `--audio-device`). `up`/`down` pick, `left`/`right` change. Choices are remembered between runs.
 * **Sleep timer** (`z`, or in the settings menu, or `POST /api/sleep/45`): a minute before it ends a notice says so, and pressing any key
   cancels it ("still watching"). At zero the picture goes to a "goodnight" screen and archive.org streaming stops; any key wakes it back
   to the channel it was on. With CEC it also puts the TV into standby. `"sleep_action": "quit"` exits the program instead.
@@ -116,9 +142,12 @@ POST /api/channel/<dial|id>  e.g. /api/channel/203 or /api/channel/ray-gun
 POST /api/key/<name>         up down last info guide fullscreen mute volup voldown left right enter
 POST /api/volume/<up|down|mute>
 POST /api/sleep/<minutes>    sleep timer, 0 = off
+POST /api/page/<100-999>     open that teletext page
+POST /api/search/<words>     search every channel; the results open in teletext
 ```
 
-Keys also include `captions diag help testcard now details menu sleep bar`.
+Keys also include `captions diag help testcard now details menu sleep bar`, `text red green yellow blue` (teletext and its colour keys)
+and `favourite hide favs_only`. The phone page has buttons for these and a search box. `/api/channels` says which channels are favourites or hidden.
 
 ```bash
 curl http://tv.local:8080/api/status
@@ -165,10 +194,18 @@ real TV. If a key does nothing, run `cec-client -d 16` on the Pi, press it, and 
 
 `config.json`. Important keys: `start_channel`, `bar_seconds`, `bumps` (set false to skip slides),
 `noise` (`"lavfi"` or `"none"`), `drift_s` (re-seek if playback is more than this many seconds off the schedule),
-`remember`, `web` and `cec` (see above), `splash_seconds`, `sleep_action` (`blank` or `quit`), and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
+`remember`, `web` and `cec` (see above), `splash_seconds`, `sleep_action` (`blank` or `quit`), `favourites_only`, `reminder_autotune`,
+`feeds` (teletext news), `teletext_font`, and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
 Profiles: `mac`, `pi` (composite), `hdmi` (Pi on HDMI/TV), `desktop` / `desktop-lite` (Linux laptops and PCs), and black-and-white versions `mac-bw`, `pi-bw`, `hdmi-bw`, `desktop-bw`. The overlays follow the window or display shape (4:3 or 16:9), also when you resize.
 Choose a profile with `--profile pi` or the `profile` key. Cache: `~/.cache/spelunkr` (lineup refreshed every 10 min,
 manifests kept per version).
+
+## Checking a machine: `--doctor`
+
+`python3 tv.py --doctor` checks that mpv is new enough, the cache folder is writable, data.spelunkr.tv and archive.org answer (and HTTPS certificates
+verify, and the clock is right), the audio device the profile asks for exists, a USB keyboard is readable (the `input` group), the display device is
+usable for DRM profiles, CEC is installed if enabled, the Pi is not under-voltage or hot, the teletext font is installed and the news feeds parse.
+Each problem comes with the command that fixes it, and the exit code is 1 if anything failed. It needs no display, so run it over SSH on a fresh Pi.
 
 ## Laptops and other Linux machines
 
@@ -262,15 +299,22 @@ schedule no longer holds up the playback loop.
 | `webremote.py` | web remote + JSON API |
 | `subs.py` | captions: the site's subtitle files as SRT for mpv |
 | `prefetch.py` | resolves the next item's archive.org URL ahead of time |
+| `teletext.py` | the Ceefax-style renderer: 40x25 grid, colour codes, pages, logo as block graphics |
+| `ttpages.py` | what is on each teletext page |
+| `feeds.py` | RSS / Atom reader for the news pages |
+| `search.py` | search across every channel's titles and descriptions |
+| `doctor.py` | the `--doctor` checks |
+| `tests/` | `python3 -m unittest discover -s tests` (no network, no mpv needed) |
 | `mac/` | `make_app.sh` (builds the .app), `menubar.py` (menu bar item), `make_icon.py` |
 | `pi/` | probe script, setup script, systemd unit |
 | `tools/verify_guide.py` | compare against the site's guide |
 
 ## Not done yet
 
-* Guide: it only lists programmes, not breaks, and does not show descriptions (the details screen does).
 * Audio for `vacation-slides` (audio overlay channel) and the bump music; video and slides only.
 * Prefetch: measured to help (a start took 4 s through the shortcut against 37 s cold), but each file is different, so treat the numbers as indicative.
-* Everything on the Pi hardware.
+* Everything on the Pi hardware, including the teletext font and layout on a composite display (the overlays are checked on a Mac only).
+* Teletext: pages are rendered with a stretched monospace font, so columns can drift by a pixel or two with other fonts; no mosaic
+  graphics beyond the channel logos; search has no punctuation keys.
 * The menu bar item (needs `rumps`; written but never run).
 * Window position is not remembered on the Mac (mpv does not expose it); size and fullscreen are.
