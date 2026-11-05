@@ -30,6 +30,7 @@
         "--no-input-default-bindings",
         "--title=${force-media-title}",
         "--geometry=720x540",
+        "--auto-window-resize=no",
         "--keep-open=no",
         "--audio-display=no",
         "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
@@ -165,6 +166,7 @@
         "--no-input-default-bindings",
         "--title=${force-media-title}",
         "--geometry=720x540",
+        "--auto-window-resize=no",
         "--keep-open=no",
         "--audio-display=no",
         "--user-agent=spelunkr-pi-client/0.1 (personal, non-commercial)",
@@ -244,6 +246,7 @@
         "--sub-border-size=2.5",
         "--sub-pos=94",
         "--autofit=60%",
+        "--auto-window-resize=no",
         "--hwdec=auto-safe",
         "--vd-lavc-threads=0",
         "--framedrop=vo"
@@ -277,6 +280,7 @@
         "--sub-border-size=2.5",
         "--sub-pos=94",
         "--autofit=60%",
+        "--auto-window-resize=no",
         "--vd-lavc-threads=0",
         "--hwdec=no",
         "--vo=xv",
@@ -316,6 +320,7 @@
         "--sub-border-size=2.5",
         "--sub-pos=94",
         "--autofit=60%",
+        "--auto-window-resize=no",
         "--hwdec=auto-safe",
         "--vd-lavc-threads=0",
         "--framedrop=vo"
@@ -345,6 +350,7 @@
   "sleep_action": "blank",
   "evdev": true,
   "guide_cache_channels": 8,
+  "pixel_fonts": true,
   "favourites_only": false,
   "reminder_autotune": false,
   "feeds": []

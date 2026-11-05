@@ -227,6 +227,23 @@ def check_fonts(cfg, env):
              "sudo apt install fonts-dejavu-core   (or set \"teletext_font\" in config.json)")]
 
 
+def check_pixel_fonts(cfg, env):
+    import osd
+    fonts = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    if cfg.get("pixel_fonts", True) is False:
+        return [(INFO, "overlay fonts", "pixel fonts are switched off in config.json", "")]
+    if not (env.exists(fonts) and any(f.endswith(".ttf") for f in os.listdir(fonts))):
+        return [(WARN, "overlay fonts", "the fonts/ folder is missing, so the overlays use the plain look", "restore fonts/ from the project (see fonts/README.md)")]
+    path = env.which(cfg["prof"]["mpv"][0])
+    code, text = env.run([path, "--no-config", "--list-options"]) if path else (None, "")
+    if "--osd-fonts-dir" in (text or ""):
+        return [(OK, "overlay fonts", "mpv loads the website's pixel fonts from fonts/", "")]
+    if env.which("fc-list") and "star4" in (env.run(["fc-list", "Star4 Large"])[1] or "").lower():
+        return [(OK, "overlay fonts", "the pixel fonts are installed system-wide", "")]
+    return [(WARN, "overlay fonts", "this mpv cannot load fonts from a folder and the fonts are not installed, so the overlays use the plain look",
+             "sudo mkdir -p /usr/local/share/fonts/spelunkr && sudo cp fonts/*.ttf /usr/local/share/fonts/spelunkr/ && fc-cache -f   (pi/setup.sh does this)")]
+
+
 def check_feeds(cfg, env):
     out = []
     for f in cfg.get("feeds") or []:
@@ -243,7 +260,7 @@ def check_feeds(cfg, env):
 
 
 CHECKS = [check_python, check_mpv, check_cache, check_network, check_audio, check_inputs, check_display, check_cec,
-          check_pi, check_fonts, check_feeds]
+          check_pi, check_fonts, check_pixel_fonts, check_feeds]
 
 
 def run_checks(cfg, env=None):

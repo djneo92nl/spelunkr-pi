@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -56,6 +57,30 @@ OVL_TT, OVL_TT_HDR = 9, 10               # teletext page, and its header row (re
 TT_CACHE_S = 60
 TT_DIGITS_S = 3
 SLEEP_STEPS = [0, 15, 30, 60, 90, 120]       # minutes
+
+
+def setup_fonts(cfg):
+    """Use the website's pixel fonts for the overlays when mpv can load them; returns the mpv arguments to add.
+    mpv >= 0.37 takes --osd-fonts-dir; on an older one the fonts must be installed system-wide (pi/setup.sh does that).
+    If neither works the overlays keep the old look."""
+    fonts = os.path.join(HERE, "fonts")
+    if cfg.get("pixel_fonts", True) is False or not (os.path.isdir(fonts) and any(f.endswith(".ttf") for f in os.listdir(fonts))):
+        osd.set_pixel_fonts(False)
+        return []
+    try:
+        options = subprocess.run([cfg["prof"]["mpv"][0], "--no-config", "--list-options"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        options = ""
+    if "--osd-fonts-dir" in options:
+        osd.set_pixel_fonts(True)
+        return [f"--osd-fonts-dir={fonts}"]
+    try:
+        installed = "star4" in subprocess.run(["fc-list", "Star4 Large"], capture_output=True, text=True, timeout=10).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        installed = False
+    osd.set_pixel_fonts(installed)
+    log.info("pixel fonts: mpv has no --osd-fonts-dir; %s", "using the installed fonts" if installed else "not installed, keeping the plain look")
+    return []
 
 
 def load_config(path, profile=None):
@@ -1854,7 +1879,7 @@ def create(argv=None):
         cfg["prof"]["mono"] = True
     if cfg["prof"].get("mono") and not any(x.startswith("--saturation") for x in cfg["prof"]["mpv"] + a.mpv_arg):
         cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + ["--saturation=-100"]      # grayscale picture
-    cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + (["--fs"] if a.fs else []) + a.mpv_arg
+    cfg["prof"]["mpv"] = cfg["prof"]["mpv"] + (["--fs"] if a.fs else []) + a.mpv_arg + setup_fonts(cfg)
     src = Source(cfg)
     chans = src.channels()
     if a.list:

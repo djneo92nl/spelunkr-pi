@@ -70,6 +70,13 @@ Open `https://spelunkr.tv/<channel-id>` next to it and compare. Expect about ±1
 
 ## What you see
 
+The on-screen graphics are styled after the spelunkr.tv website: its WeatherStar 4000 pixel fonts (`fonts/`), navy panels with blue
+bevelled borders and hard shadows, gold and yellow titles, orange gradient key caps, the purple-to-orange sky behind full-screen
+screens, the blue striped guide grid with a yellow selection frame, and the channel's pixel logo in the info bar and the details screen.
+Teletext keeps its own Ceefax look. mpv loads the fonts with `--osd-fonts-dir` (added automatically when your mpv supports it, 0.37 or newer);
+on an older mpv they must be installed system-wide (`pi/setup.sh` does that), and without them everything falls back to the plain look.
+`"pixel_fonts": false` in `config.json` forces the plain look. `--doctor` says which one you get.
+
 * **Tuning**: static with the channel number and name, plus a live status line so you can see what it is waiting for:
   `CHECKING SCHEDULE...` (static), then `CONNECTING TO ARCHIVE.ORG...` and `BUFFERING...` on a dark card, each with a seconds counter
   (and a note if archive.org is slow). The card clears when the first frame arrives. The schedule loads in the background,
@@ -195,7 +202,7 @@ real TV. If a key does nothing, run `cec-client -d 16` on the Pi, press it, and 
 `config.json`. Important keys: `start_channel`, `bar_seconds`, `bumps` (set false to skip slides),
 `noise` (`"lavfi"` or `"none"`), `drift_s` (re-seek if playback is more than this many seconds off the schedule),
 `remember`, `web` and `cec` (see above), `splash_seconds`, `sleep_action` (`blank` or `quit`), `favourites_only`, `reminder_autotune`,
-`feeds` (teletext news), `teletext_font`, and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
+`feeds` (teletext news), `teletext_font`, `pixel_fonts`, and `profiles.<name>.mpv` (the exact mpv command line; `{sock}` and `{inputconf}` are filled in).
 Profiles: `mac`, `pi` (composite), `hdmi` (Pi on HDMI/TV), `desktop` / `desktop-lite` (Linux laptops and PCs), and black-and-white versions `mac-bw`, `pi-bw`, `hdmi-bw`, `desktop-bw`. The overlays follow the window or display shape (4:3 or 16:9), also when you resize.
 Choose a profile with `--profile pi` or the `profile` key. Cache: `~/.cache/spelunkr` (lineup refreshed every 10 min,
 manifests kept per version).
@@ -299,6 +306,8 @@ schedule no longer holds up the playback loop.
 | `webremote.py` | web remote + JSON API |
 | `subs.py` | captions: the site's subtitle files as SRT for mpv |
 | `prefetch.py` | resolves the next item's archive.org URL ahead of time |
+| `fonts/` | the website's pixel fonts as TrueType (see `fonts/README.md`) |
+| `tools/woff2_to_ttf.py` | converts the site's WOFF2 fonts to TTF (needs `node` for Brotli) |
 | `teletext.py` | the Ceefax-style renderer: 40x25 grid, colour codes, pages, logo as block graphics |
 | `ttpages.py` | what is on each teletext page |
 | `feeds.py` | RSS / Atom reader for the news pages |
